@@ -1,0 +1,2 @@
+ALTER TABLE workflow_executions
+ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
