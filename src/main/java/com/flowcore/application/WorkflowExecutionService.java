@@ -14,10 +14,14 @@ public class WorkflowExecutionService {
 
     private final WorkflowExecutionRepository repository;
 
+    private final WorkflowDefinitionRepository definitionRepository;
+
     public WorkflowExecutionService(
-            WorkflowExecutionRepository repository
+            WorkflowExecutionRepository repository,
+            WorkflowDefinitionRepository definitionRepository
     ) {
         this.repository = repository;
+        this.definitionRepository = definitionRepository;
     }
 
     @Transactional
@@ -26,6 +30,16 @@ public class WorkflowExecutionService {
             int definitionVersion,
             Map<String, Object> inputPayload
     ) {
+        definitionRepository.findByTypeAndVersion(
+                workflowType,
+                definitionVersion
+        ).orElseThrow(() ->
+                new WorkflowDefinitionNotFoundException(
+                        workflowType,
+                        definitionVersion
+                )
+        );
+
         WorkflowExecution execution = WorkflowExecution.create(
                 workflowType,
                 definitionVersion,
@@ -97,6 +111,7 @@ public class WorkflowExecutionService {
                 persisted.version()
         );
     }
+
 
 
 }

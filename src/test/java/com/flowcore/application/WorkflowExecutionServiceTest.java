@@ -1,6 +1,9 @@
 
 package com.flowcore.application;
 
+import com.flowcore.definition.model.StepType;
+import com.flowcore.definition.model.WorkflowDefinition;
+import com.flowcore.definition.model.WorkflowStepDefinition;
 import com.flowcore.domain.WorkflowExecution;
 import com.flowcore.domain.WorkflowStatus;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,11 +27,17 @@ class WorkflowExecutionServiceTest {
     @Mock
     private WorkflowExecutionRepository repository;
 
+    @Mock
+    private WorkflowDefinitionRepository definitionRepository;
+
     private WorkflowExecutionService service;
 
     @BeforeEach
     void setUp() {
-        service = new WorkflowExecutionService(repository);
+        service = new WorkflowExecutionService(
+                repository,
+                definitionRepository
+        );
     }
 
     @Test
@@ -46,7 +55,10 @@ class WorkflowExecutionServiceTest {
                             0
                     );
                 });
-
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING",
+                1
+        )).thenReturn(Optional.of(createDefinition()));
         PersistedWorkflowExecution result = service.create(
                 "ORDER_PROCESSING",
                 1,
@@ -246,5 +258,39 @@ class WorkflowExecutionServiceTest {
         verify(repository, never()).update(any(), anyLong());
     }
 
+    @Test
+    void shouldRejectExecutionWhenDefinitionDoesNotExist() {
+        when(definitionRepository.findByTypeAndVersion(
+                "UNKNOWN_WORKFLOW",
+                1
+        )).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() ->
+                service.create(
+                        "UNKNOWN_WORKFLOW",
+                        1,
+                        Map.of("orderId", "order-123")
+                )
+        ).isInstanceOf(WorkflowDefinitionNotFoundException.class);
+
+        verify(repository, never()).save(any());
+    }
+
+    private WorkflowDefinition createDefinition() {
+        return new WorkflowDefinition(
+                "ORDER_PROCESSING",
+                1,
+                java.util.List.of(
+                        new WorkflowStepDefinition(
+                                "validate-order",
+                                StepType.SERVICE_TASK
+                        ),
+                        new WorkflowStepDefinition(
+                                "wait-for-payment",
+                                StepType.WAIT
+                        )
+                )
+        );
+    }
 
 }

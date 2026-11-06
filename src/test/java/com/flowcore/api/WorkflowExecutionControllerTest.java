@@ -16,7 +16,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import com.flowcore.application.WorkflowDefinitionRepository;
+import com.flowcore.definition.model.WorkflowDefinition;
+import com.flowcore.definition.model.WorkflowStepDefinition;
+import com.flowcore.definition.model.StepType;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -45,10 +50,14 @@ class WorkflowExecutionControllerTest {
     private MockMvc mockMvc;
 
     @Autowired
+    private WorkflowDefinitionRepository workflowDefinitionRepository;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     @Test
     void shouldCreateWorkflow() throws Exception {
+        registerOrderProcessingDefinition();
         CreateWorkflowRequest request = new CreateWorkflowRequest(
                 "ORDER_PROCESSING",
                 1,
@@ -79,6 +88,7 @@ class WorkflowExecutionControllerTest {
 
     @Test
     void shouldRetrieveWorkflow() throws Exception {
+        registerOrderProcessingDefinition();
         CreateWorkflowRequest request = new CreateWorkflowRequest(
                 "ORDER_PROCESSING",
                 1,
@@ -117,6 +127,7 @@ class WorkflowExecutionControllerTest {
 
     @Test
     void shouldExecuteWorkflowLifecycleThroughApi() throws Exception {
+        registerOrderProcessingDefinition();
         CreateWorkflowRequest request = new CreateWorkflowRequest(
                 "ORDER_PROCESSING",
                 1,
@@ -202,6 +213,7 @@ class WorkflowExecutionControllerTest {
 
     @Test
     void shouldReturn409ForInvalidWorkflowTransition() throws Exception {
+        registerOrderProcessingDefinition();
         CreateWorkflowRequest request = new CreateWorkflowRequest(
                 "ORDER_PROCESSING",
                 1,
@@ -229,6 +241,47 @@ class WorkflowExecutionControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value(409))
                 .andExpect(jsonPath("$.error").value("Conflict"));
+    }
+
+    @Test
+    void shouldReturn404WhenWorkflowDefinitionDoesNotExist() throws Exception {
+        mockMvc.perform(post("/api/v1/workflows")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                            {
+                                "workflowType": "UNKNOWN_WORKFLOW",
+                                "definitionVersion": 1,
+                                "inputPayload": {
+                                    "orderId": "order-123"
+                                }
+                            }
+                            """))
+                .andExpect(status().isNotFound());
+    }
+
+    private void registerOrderProcessingDefinition() {
+        boolean exists = workflowDefinitionRepository
+                .findByTypeAndVersion("ORDER_PROCESSING", 1)
+                .isPresent();
+
+        if (!exists) {
+            workflowDefinitionRepository.register(
+                    new WorkflowDefinition(
+                            "ORDER_PROCESSING",
+                            1,
+                            List.of(
+                                    new WorkflowStepDefinition(
+                                            "validate-order",
+                                            StepType.SERVICE_TASK
+                                    ),
+                                    new WorkflowStepDefinition(
+                                            "wait-for-payment",
+                                            StepType.WAIT
+                                    )
+                            )
+                    )
+            );
+        }
     }
 
 }
