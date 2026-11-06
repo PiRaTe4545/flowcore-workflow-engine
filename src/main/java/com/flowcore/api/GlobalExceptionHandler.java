@@ -9,6 +9,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import com.flowcore.application.WorkflowDefinitionNotFoundException;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.time.Instant;
 import java.util.Map;
@@ -69,5 +71,25 @@ public class GlobalExceptionHandler {
         );
 
         return ResponseEntity.status(status).body(body);
+    }
+
+    @ExceptionHandler(WorkflowDefinitionNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleWorkflowDefinitionNotFound(
+            WorkflowDefinitionNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage()
+        );
+    }
+
+    @ExceptionHandler(DuplicateKeyException.class)
+    public ResponseEntity<Map<String, Object>> handleDuplicateDefinition(
+            DuplicateKeyException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                "This workflow definition version is already registered"
+        );
     }
 }
