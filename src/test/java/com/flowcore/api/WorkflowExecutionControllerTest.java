@@ -1,6 +1,7 @@
 
 package com.flowcore.api;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flowcore.api.dto.CreateWorkflowRequest;
 import com.flowcore.api.dto.WorkflowExecutionResponse;
@@ -259,6 +260,52 @@ class WorkflowExecutionControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+
+    @Test
+    void shouldRetrieveWorkflowExecutionHistoryThroughApi() throws Exception {
+        registerOrderProcessingDefinition();
+
+        String createResponse = mockMvc.perform(
+                        post("/api/v1/workflows")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                    {
+                                        "workflowType": "ORDER_PROCESSING",
+                                        "definitionVersion": 1,
+                                        "inputPayload": {
+                                            "orderId": "order-123"
+                                        }
+                                    }
+                                    """)
+                )
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode createdWorkflow = objectMapper.readTree(createResponse);
+        String workflowId = createdWorkflow.get("workflowId").asText();
+
+        mockMvc.perform(
+                        post("/api/v1/workflows/{workflowId}/start", workflowId)
+                )
+                .andExpect(status().isOk());
+
+        mockMvc.perform(
+                        get("/api/v1/workflows/{workflowId}/history", workflowId)
+                )
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].eventType").value("CREATED"))
+                .andExpect(jsonPath("$[0].newStatus").value("PENDING"))
+                .andExpect(jsonPath("$[0].executionVersion").value(0))
+                .andExpect(jsonPath("$[1].eventType").value("STARTED"))
+                .andExpect(jsonPath("$[1].previousStatus").value("PENDING"))
+                .andExpect(jsonPath("$[1].newStatus").value("RUNNING"))
+                .andExpect(jsonPath("$[1].executionVersion").value(1));
+    }
+
+
     private void registerOrderProcessingDefinition() {
         boolean exists = workflowDefinitionRepository
                 .findByTypeAndVersion("ORDER_PROCESSING", 1)
@@ -282,6 +329,131 @@ class WorkflowExecutionControllerTest {
                     )
             );
         }
+    }
+
+    @Test
+    void shouldRetrieveCompleteWorkflowLifecycleHistoryThroughApi() throws Exception {
+        registerOrderProcessingDefinition();
+
+        String createResponse = mockMvc.perform(
+                        post("/api/v1/workflows")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                    {
+                                        "workflowType": "ORDER_PROCESSING",
+                                        "definitionVersion": 1,
+                                        "inputPayload": {
+                                            "orderId": "order-history-123"
+                                        }
+                                    }
+                                    """)
+                )
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        String workflowId = objectMapper.readTree(createResponse)
+                .get("workflowId").asText();
+
+        mockMvc.perform(post("/api/v1/workflows/{workflowId}/start", workflowId))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/workflows/{workflowId}/complete", workflowId))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/workflows/{workflowId}/history", workflowId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$[0].eventType").value("CREATED"))
+                .andExpect(jsonPath("$[0].newStatus").value("PENDING"))
+                .andExpect(jsonPath("$[0].executionVersion").value(0))
+                .andExpect(jsonPath("$[1].eventType").value("STARTED"))
+                .andExpect(jsonPath("$[1].previousStatus").value("PENDING"))
+                .andExpect(jsonPath("$[1].newStatus").value("RUNNING"))
+                .andExpect(jsonPath("$[1].executionVersion").value(1))
+                .andExpect(jsonPath("$[2].eventType").value("COMPLETED"))
+                .andExpect(jsonPath("$[2].previousStatus").value("RUNNING"))
+                .andExpect(jsonPath("$[2].newStatus").value("COMPLETED"))
+                .andExpect(jsonPath("$[2].executionVersion").value(2));
+    }
+
+    @Test
+    void shouldRecordFailedWorkflowHistory() throws Exception {
+        registerOrderProcessingDefinition();
+
+        String createResponse = mockMvc.perform(
+                        post("/api/v1/workflows")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                    {
+                                        "workflowType": "ORDER_PROCESSING",
+                                        "definitionVersion": 1,
+                                        "inputPayload": {
+                                            "orderId": "order-failed-123"
+                                        }
+                                    }
+                                    """)
+                )
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        String workflowId = objectMapper.readTree(createResponse)
+                .get("workflowId").asText();
+
+        mockMvc.perform(post("/api/v1/workflows/{workflowId}/start", workflowId))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/workflows/{workflowId}/fail", workflowId))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/workflows/{workflowId}/history", workflowId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$[2].eventType").value("FAILED"))
+                .andExpect(jsonPath("$[2].previousStatus").value("RUNNING"))
+                .andExpect(jsonPath("$[2].newStatus").value("FAILED"))
+                .andExpect(jsonPath("$[2].executionVersion").value(2));
+    }
+
+    @Test
+    void shouldRecordCancelledWorkflowHistory() throws Exception {
+        registerOrderProcessingDefinition();
+
+        String createResponse = mockMvc.perform(
+                        post("/api/v1/workflows")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                    {
+                                        "workflowType": "ORDER_PROCESSING",
+                                        "definitionVersion": 1,
+                                        "inputPayload": {
+                                            "orderId": "order-cancelled-123"
+                                        }
+                                    }
+                                    """)
+                )
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        String workflowId = objectMapper.readTree(createResponse)
+                .get("workflowId").asText();
+
+        mockMvc.perform(post("/api/v1/workflows/{workflowId}/cancel", workflowId))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/workflows/{workflowId}/history", workflowId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].eventType").value("CREATED"))
+                .andExpect(jsonPath("$[1].eventType").value("CANCELLED"))
+                .andExpect(jsonPath("$[1].previousStatus").value("PENDING"))
+                .andExpect(jsonPath("$[1].newStatus").value("CANCELLED"))
+                .andExpect(jsonPath("$[1].executionVersion").value(1));
     }
 
 }

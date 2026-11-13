@@ -5,10 +5,13 @@ import com.flowcore.api.dto.CreateWorkflowRequest;
 import com.flowcore.api.dto.WorkflowExecutionResponse;
 import com.flowcore.application.PersistedWorkflowExecution;
 import com.flowcore.application.WorkflowExecutionService;
+import com.flowcore.domain.WorkflowExecutionEvent;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -82,5 +85,16 @@ public class WorkflowExecutionController {
                 service.cancel(workflowId)
         );
     }
+
+
+    @GetMapping("/{workflowId}/history")
+    public ResponseEntity<List<WorkflowExecutionEvent>> getHistory(
+            @PathVariable UUID workflowId
+    ) {
+        return ResponseEntity.ok(
+                service.getHistory(workflowId)
+        );
+    }
+
 
 }

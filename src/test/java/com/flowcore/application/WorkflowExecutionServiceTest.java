@@ -4,16 +4,17 @@ package com.flowcore.application;
 import com.flowcore.definition.model.StepType;
 import com.flowcore.definition.model.WorkflowDefinition;
 import com.flowcore.definition.model.WorkflowStepDefinition;
-import com.flowcore.domain.WorkflowExecution;
-import com.flowcore.domain.WorkflowStatus;
+import com.flowcore.domain.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import com.flowcore.domain.InvalidWorkflowTransitionException;
+
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,13 +31,17 @@ class WorkflowExecutionServiceTest {
     @Mock
     private WorkflowDefinitionRepository definitionRepository;
 
+    @Mock
+    private WorkflowExecutionEventRepository eventRepository;
+
     private WorkflowExecutionService service;
 
     @BeforeEach
     void setUp() {
         service = new WorkflowExecutionService(
                 repository,
-                definitionRepository
+                definitionRepository,
+                eventRepository
         );
     }
 
@@ -70,6 +75,14 @@ class WorkflowExecutionServiceTest {
         assertThat(result.workflowExecution().getStatus())
                 .isEqualTo(WorkflowStatus.PENDING);
 
+        verify(eventRepository).append(
+                argThat(event ->
+                        event.eventType() == WorkflowEventType.CREATED
+                                && event.previousStatus() == null
+                                && event.newStatus() == WorkflowStatus.PENDING
+                                && event.executionVersion() == 0
+                )
+        );
         verify(repository).save(any(WorkflowExecution.class));
     }
 
@@ -274,7 +287,57 @@ class WorkflowExecutionServiceTest {
         ).isInstanceOf(WorkflowDefinitionNotFoundException.class);
 
         verify(repository, never()).save(any());
+        verify(repository, never()).save(any());
+        verify(eventRepository, never()).append(any());
     }
+
+
+    @Test
+    void shouldRetrieveWorkflowExecutionHistory() {
+        UUID workflowId = UUID.randomUUID();
+
+        PersistedWorkflowExecution persisted = createRunningWorkflow();
+
+        WorkflowExecutionEvent event = new WorkflowExecutionEvent(
+                1L,
+                workflowId,
+                WorkflowEventType.STARTED,
+                WorkflowStatus.PENDING,
+                WorkflowStatus.RUNNING,
+                1,
+                Map.of(),
+                Instant.now()
+        );
+
+        when(repository.findById(workflowId))
+                .thenReturn(Optional.of(persisted));
+
+        when(eventRepository.findByWorkflowId(workflowId))
+                .thenReturn(List.of(event));
+
+        List<WorkflowExecutionEvent> history =
+                service.getHistory(workflowId);
+
+        assertThat(history).hasSize(1);
+        assertThat(history.get(0).eventType())
+                .isEqualTo(WorkflowEventType.STARTED);
+
+        verify(eventRepository).findByWorkflowId(workflowId);
+    }
+
+    @Test
+    void shouldThrowWhenRetrievingHistoryForNonExistingWorkflow() {
+        UUID workflowId = UUID.randomUUID();
+
+        when(repository.findById(workflowId))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.getHistory(workflowId))
+                .isInstanceOf(WorkflowExecutionNotFoundException.class);
+
+        verify(eventRepository, never()).findByWorkflowId(any());
+    }
+
 
     private WorkflowDefinition createDefinition() {
         return new WorkflowDefinition(

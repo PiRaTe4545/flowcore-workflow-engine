@@ -4,6 +4,11 @@ package com.flowcore.application;
 import com.flowcore.domain.WorkflowExecution;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.flowcore.domain.WorkflowExecutionEvent;
+import com.flowcore.domain.WorkflowEventType;
+import com.flowcore.domain.WorkflowStatus;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import java.util.Map;
@@ -16,12 +21,15 @@ public class WorkflowExecutionService {
 
     private final WorkflowDefinitionRepository definitionRepository;
 
+    private final WorkflowExecutionEventRepository eventRepository;
+
     public WorkflowExecutionService(
             WorkflowExecutionRepository repository,
-            WorkflowDefinitionRepository definitionRepository
+            WorkflowDefinitionRepository definitionRepository, WorkflowExecutionEventRepository eventRepository
     ) {
         this.repository = repository;
         this.definitionRepository = definitionRepository;
+        this.eventRepository = eventRepository;
     }
 
     @Transactional
@@ -45,8 +53,22 @@ public class WorkflowExecutionService {
                 definitionVersion,
                 inputPayload
         );
+        PersistedWorkflowExecution persisted = repository.save(execution);
 
-        return repository.save(execution);
+        eventRepository.append(
+                new WorkflowExecutionEvent(
+                        null,
+                        execution.getWorkflowId(),
+                        WorkflowEventType.CREATED,
+                        null,
+                        WorkflowStatus.PENDING,
+                        persisted.version(),
+                        Map.of(),
+                        Instant.now()
+                )
+        );
+
+        return persisted;
     }
 
 
@@ -65,51 +87,122 @@ public class WorkflowExecutionService {
 
     @Transactional
     public PersistedWorkflowExecution start(UUID workflowId) {
-        PersistedWorkflowExecution persisted = getById(workflowId);
+        PersistedWorkflowExecution persisted = repository.findById(workflowId)
+                .orElseThrow(() -> new WorkflowExecutionNotFoundException(workflowId));
+
+        WorkflowStatus previousStatus = persisted.workflowExecution().getStatus();
 
         persisted.workflowExecution().start();
 
-        return repository.update(
+        PersistedWorkflowExecution updated = repository.update(
                 persisted.workflowExecution(),
                 persisted.version()
         );
+
+        eventRepository.append(new WorkflowExecutionEvent(
+                null,
+                workflowId,
+                WorkflowEventType.STARTED,
+                previousStatus,
+                updated.workflowExecution().getStatus(),
+                updated.version(),
+                Map.of(),
+                Instant.now()
+        ));
+
+        return updated;
     }
 
 
     @Transactional
     public PersistedWorkflowExecution complete(UUID workflowId) {
-        PersistedWorkflowExecution persisted = getById(workflowId);
+        PersistedWorkflowExecution persisted = repository.findById(workflowId)
+                .orElseThrow(() -> new WorkflowExecutionNotFoundException(workflowId));
+
+        WorkflowStatus previousStatus = persisted.workflowExecution().getStatus();
 
         persisted.workflowExecution().complete();
 
-        return repository.update(
+        PersistedWorkflowExecution updated = repository.update(
                 persisted.workflowExecution(),
                 persisted.version()
         );
+
+        eventRepository.append(new WorkflowExecutionEvent(
+                null,
+                workflowId,
+                WorkflowEventType.COMPLETED,
+                previousStatus,
+                updated.workflowExecution().getStatus(),
+                updated.version(),
+                Map.of(),
+                Instant.now()
+        ));
+
+        return updated;
     }
 
     @Transactional
     public PersistedWorkflowExecution fail(UUID workflowId) {
-        PersistedWorkflowExecution persisted = getById(workflowId);
+        PersistedWorkflowExecution persisted = repository.findById(workflowId)
+                .orElseThrow(() -> new WorkflowExecutionNotFoundException(workflowId));
+
+        WorkflowStatus previousStatus = persisted.workflowExecution().getStatus();
 
         persisted.workflowExecution().fail();
 
-        return repository.update(
+        PersistedWorkflowExecution updated = repository.update(
                 persisted.workflowExecution(),
                 persisted.version()
         );
+
+        eventRepository.append(new WorkflowExecutionEvent(
+                null,
+                workflowId,
+                WorkflowEventType.FAILED,
+                previousStatus,
+                updated.workflowExecution().getStatus(),
+                updated.version(),
+                Map.of(),
+                Instant.now()
+        ));
+
+        return updated;
     }
 
     @Transactional
     public PersistedWorkflowExecution cancel(UUID workflowId) {
-        PersistedWorkflowExecution persisted = getById(workflowId);
+        PersistedWorkflowExecution persisted = repository.findById(workflowId)
+                .orElseThrow(() -> new WorkflowExecutionNotFoundException(workflowId));
+
+        WorkflowStatus previousStatus = persisted.workflowExecution().getStatus();
 
         persisted.workflowExecution().cancel();
 
-        return repository.update(
+        PersistedWorkflowExecution updated = repository.update(
                 persisted.workflowExecution(),
                 persisted.version()
         );
+
+        eventRepository.append(new WorkflowExecutionEvent(
+                null,
+                workflowId,
+                WorkflowEventType.CANCELLED,
+                previousStatus,
+                updated.workflowExecution().getStatus(),
+                updated.version(),
+                Map.of(),
+                Instant.now()
+        ));
+
+        return updated;
+    }
+
+    @Transactional(readOnly = true)
+    public List<WorkflowExecutionEvent> getHistory(UUID workflowId) {
+        getById(workflowId);
+
+        return eventRepository.findByWorkflowId(workflowId);
     }
 
 
