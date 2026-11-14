@@ -1,20 +1,25 @@
-
 package com.flowcore.definition.model;
+
+import jakarta.validation.Valid;
 
 import java.util.Objects;
 
 public record WorkflowStepDefinition(
         String name,
-        StepType type
+        StepType type,
+        @Valid RetryPolicy retryPolicy,
+        @Valid TimeoutPolicy timeoutPolicy
 ) {
     public WorkflowStepDefinition {
-        Objects.requireNonNull(name, "step name cannot be null");
-        Objects.requireNonNull(type, "step type cannot be null");
+        Objects.requireNonNull(name, "name cannot be null");
+        Objects.requireNonNull(type, "type cannot be null");
 
         if (name.isBlank()) {
-            throw new IllegalArgumentException(
-                    "step name cannot be blank"
-            );
+            throw new IllegalArgumentException("name cannot be blank");
         }
+    }
+
+    public WorkflowStepDefinition(String name, StepType type) {
+        this(name, type, null, null);
     }
 }

@@ -1,9 +1,7 @@
 package com.flowcore.persistence;
 
 import com.flowcore.application.WorkflowDefinitionRepository;
-import com.flowcore.definition.model.StepType;
-import com.flowcore.definition.model.WorkflowDefinition;
-import com.flowcore.definition.model.WorkflowStepDefinition;
+import com.flowcore.definition.model.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +13,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -98,6 +97,88 @@ class PostgresWorkflowDefinitionRepositoryTest {
                         .isPresent()
         );
     }
+
+
+    @Test
+    void shouldPersistAndRetrieveStepRetryPolicy() {
+        RetryPolicy retryPolicy = new RetryPolicy(
+                5,
+                Duration.ofSeconds(2),
+                2.0,
+                Duration.ofSeconds(30)
+        );
+
+        WorkflowDefinition definition = new WorkflowDefinition(
+                "ORDER_PROCESSING",
+                1,
+                List.of(
+                        new WorkflowStepDefinition(
+                                "validate-order",
+                                StepType.SERVICE_TASK,
+                                retryPolicy,null
+                        ),
+                        new WorkflowStepDefinition(
+                                "wait-for-payment",
+                                StepType.WAIT
+                        )
+                )
+        );
+
+        repository.register(definition);
+
+        WorkflowDefinition retrieved = repository
+                .findByTypeAndVersion("ORDER_PROCESSING", 1)
+                .orElseThrow();
+
+        RetryPolicy retrievedPolicy = retrieved.steps()
+                .get(0)
+                .retryPolicy();
+
+        assertNotNull(retrievedPolicy);
+        assertEquals(5, retrievedPolicy.maxAttempts());
+        assertEquals(Duration.ofSeconds(2), retrievedPolicy.initialInterval());
+        assertEquals(2.0, retrievedPolicy.backoffMultiplier());
+        assertEquals(Duration.ofSeconds(30), retrievedPolicy.maxInterval());
+
+        assertNull(retrieved.steps().get(1).retryPolicy());
+    }
+
+    @Test
+    void shouldPersistAndRetrieveStepTimeoutPolicy() {
+        TimeoutPolicy timeoutPolicy =
+                new TimeoutPolicy(Duration.ofSeconds(60));
+
+        WorkflowDefinition definition = new WorkflowDefinition(
+                "TIMEOUT_WORKFLOW",
+                1,
+                List.of(
+                        new WorkflowStepDefinition(
+                                "process-payment",
+                                StepType.SERVICE_TASK,
+                                null,
+                                timeoutPolicy
+                        ),
+                        new WorkflowStepDefinition(
+                                "send-notification",
+                                StepType.SERVICE_TASK
+                        )
+                )
+        );
+
+        repository.register(definition);
+
+        WorkflowDefinition retrieved = repository
+                .findByTypeAndVersion("TIMEOUT_WORKFLOW", 1)
+                .orElseThrow();
+
+        assertEquals(
+                Duration.ofSeconds(60),
+                retrieved.steps().get(0).timeoutPolicy().timeout()
+        );
+
+        assertNull(retrieved.steps().get(1).timeoutPolicy());
+    }
+
 
     private WorkflowDefinition createDefinition(int version) {
         return new WorkflowDefinition(

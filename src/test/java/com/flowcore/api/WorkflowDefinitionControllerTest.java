@@ -110,6 +110,125 @@ class WorkflowDefinitionControllerTest {
                 .andExpect(status().isBadRequest());
     }
 
+
+    @Test
+    void shouldRegisterAndRetrieveWorkflowDefinitionWithRetryPolicy() throws Exception {
+        String request = """
+            {
+                "workflowType": "RETRY_WORKFLOW",
+                "version": 1,
+                "steps": [
+                    {
+                        "name": "process-payment",
+                        "type": "SERVICE_TASK",
+                        "retryPolicy": {
+                            "maxAttempts": 5,
+                            "initialInterval": "PT2S",
+                            "backoffMultiplier": 2.0,
+                            "maxInterval": "PT30S"
+                        }
+                    }
+                ]
+            }
+            """;
+
+        mockMvc.perform(post("/api/v1/workflow-definitions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get(
+                        "/api/v1/workflow-definitions/RETRY_WORKFLOW/versions/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.steps[0].name").value("process-payment"))
+                .andExpect(jsonPath("$.steps[0].retryPolicy.maxAttempts").value(5))
+                .andExpect(jsonPath("$.steps[0].retryPolicy.initialInterval").value("PT2S"))
+                .andExpect(jsonPath("$.steps[0].retryPolicy.backoffMultiplier").value(2.0))
+                .andExpect(jsonPath("$.steps[0].retryPolicy.maxInterval").value("PT30S"));
+    }
+
+    @Test
+    void shouldRejectWorkflowDefinitionWithInvalidRetryPolicy() throws Exception {
+        String request = """
+            {
+                "workflowType": "INVALID_RETRY_WORKFLOW",
+                "version": 1,
+                "steps": [
+                    {
+                        "name": "process-payment",
+                        "type": "SERVICE_TASK",
+                        "retryPolicy": {
+                            "maxAttempts": 0,
+                            "initialInterval": "PT2S",
+                            "backoffMultiplier": 2.0,
+                            "maxInterval": "PT30S"
+                        }
+                    }
+                ]
+            }
+            """;
+
+        mockMvc.perform(post("/api/v1/workflow-definitions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldRegisterAndRetrieveWorkflowDefinitionWithTimeoutPolicy() throws Exception {
+        String request = """
+            {
+                "workflowType": "TIMEOUT_WORKFLOW",
+                "version": 1,
+                "steps": [
+                    {
+                        "name": "process-payment",
+                        "type": "SERVICE_TASK",
+                        "timeoutPolicy": {
+                            "timeout": "PT60S"
+                        }
+                    }
+                ]
+            }
+            """;
+
+        mockMvc.perform(post("/api/v1/workflow-definitions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get(
+                        "/api/v1/workflow-definitions/TIMEOUT_WORKFLOW/versions/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.steps[0].name").value("process-payment"))
+                .andExpect(jsonPath("$.steps[0].timeoutPolicy.timeout").value("PT1M"));
+    }
+
+    @Test
+    void shouldRejectWorkflowDefinitionWithZeroTimeout() throws Exception {
+        String request = """
+            {
+                "workflowType": "INVALID_TIMEOUT_WORKFLOW",
+                "version": 1,
+                "steps": [
+                    {
+                        "name": "process-payment",
+                        "type": "SERVICE_TASK",
+                        "timeoutPolicy": {
+                            "timeout": "PT0S"
+                        }
+                    }
+                ]
+            }
+            """;
+
+        mockMvc.perform(post("/api/v1/workflow-definitions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isBadRequest());
+    }
+
+
     private void registerDefinition(int version) throws Exception {
         mockMvc.perform(post("/api/v1/workflow-definitions")
                         .contentType(MediaType.APPLICATION_JSON)
