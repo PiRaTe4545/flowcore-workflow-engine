@@ -1,13 +1,17 @@
 
 package com.flowcore.application;
 
+import com.flowcore.domain.WorkflowEventType;
 import com.flowcore.domain.WorkflowExecutionEvent;
+import com.flowcore.domain.WorkflowStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import com.flowcore.engine.StepExecutionEngine;
+import com.flowcore.domain.StepExecutionStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -43,10 +47,16 @@ class WorkflowExecutionTransactionTest {
     private WorkflowExecutionService workflowExecutionService;
 
     @Autowired
+    private StepExecutionRepository stepExecutionRepository;
+
+    @Autowired
     private WorkflowDefinitionRepository definitionRepository;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private StepExecutionEngine stepExecutionEngine;
 
     @MockBean
     private WorkflowExecutionEventRepository eventRepository;
@@ -210,5 +220,200 @@ class WorkflowExecutionTransactionTest {
                                 com.flowcore.domain.WorkflowEventType.CREATED
                 )
         );
+    }
+
+    @Test
+    void shouldClaimFirstStepAndPersistClaimToDatabase() {
+        // Create workflow and its step executions.
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-claim-123")
+                );
+
+        var workflowId =
+                created.workflowExecution().getWorkflowId();
+
+        // Start the workflow.
+        workflowExecutionService.start(workflowId);
+
+        // Claim the next eligible step.
+        var claimed = stepExecutionEngine
+                .claimNextStep(workflowId);
+
+        assertThat(claimed).isPresent();
+
+        assertThat(claimed.get().stepExecution().getStepName())
+                .isEqualTo("validate-order");
+
+        assertThat(claimed.get().stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.RUNNING);
+
+        assertThat(claimed.get().stepExecution().getAttemptCount())
+                .isEqualTo(1);
+
+        assertThat(claimed.get().version())
+                .isEqualTo(1);
+
+        // Reload from PostgreSQL to verify durable state.
+        var persistedSteps = stepExecutionRepository
+                .findByWorkflowId(workflowId);
+
+        assertThat(persistedSteps).hasSize(2);
+
+        assertThat(persistedSteps.get(0).stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.RUNNING);
+
+        assertThat(persistedSteps.get(0).version())
+                .isEqualTo(1);
+
+        assertThat(persistedSteps.get(1).stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.PENDING);
+
+        assertThat(persistedSteps.get(1).version())
+                .isZero();
+    }
+
+    @Test
+    void shouldClaimSecondStepOnlyAfterFirstStepCompletes() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-sequential-123")
+                );
+
+        var workflowId =
+                created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        var firstClaim = stepExecutionEngine
+                .claimNextStep(workflowId);
+
+        assertThat(firstClaim).isPresent();
+        assertThat(firstClaim.get().stepExecution().getStepName())
+                .isEqualTo("validate-order");
+
+        // The first step is still running.
+        assertThat(stepExecutionEngine.claimNextStep(workflowId))
+                .isEmpty();
+
+        // Complete the first step using its persisted state.
+        var firstStep = stepExecutionRepository
+                .findById(firstClaim.get().stepExecution().getStepExecutionId())
+                .orElseThrow();
+
+        firstStep.stepExecution().complete();
+        stepExecutionRepository.update(firstStep);
+
+        // The second step can now be claimed.
+        var secondClaim = stepExecutionEngine
+                .claimNextStep(workflowId);
+
+        assertThat(secondClaim).isPresent();
+        assertThat(secondClaim.get().stepExecution().getStepName())
+                .isEqualTo("wait-for-payment");
+
+        assertThat(secondClaim.get().stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.RUNNING);
+    }
+
+    @Test
+    void shouldCompleteWorkflowWhenAllStepsAreCompleted() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-complete-123")
+                );
+
+        var workflowId =
+                created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        // Claim and complete the first step.
+        var firstClaim = stepExecutionEngine
+                .claimNextStep(workflowId)
+                .orElseThrow();
+
+        firstClaim.stepExecution().complete();
+        stepExecutionRepository.update(firstClaim);
+
+        // Claim and complete the second step.
+        var secondClaim = stepExecutionEngine
+                .claimNextStep(workflowId)
+                .orElseThrow();
+
+        secondClaim.stepExecution().complete();
+        stepExecutionRepository.update(secondClaim);
+
+        // No steps remain. The engine should complete the workflow.
+        var result = stepExecutionEngine.claimNextStep(workflowId);
+
+        assertThat(result).isEmpty();
+
+        var completed = workflowExecutionService.getById(workflowId);
+
+        assertThat(completed.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+
+        assertThat(completed.version()).isEqualTo(2);
+
+        // Verify the completion event was appended.
+        Mockito.verify(eventRepository).append(
+                Mockito.argThat(event ->
+                        event.workflowId().equals(workflowId)
+                                && event.eventType() == WorkflowEventType.COMPLETED
+                                && event.newStatus() == WorkflowStatus.COMPLETED
+                )
+        );
+    }
+
+    @Test
+    void shouldRollbackWorkflowCompletionWhenEventPersistenceFails() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-completion-rollback")
+                );
+
+        var workflowId =
+                created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        var first = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        first.stepExecution().complete();
+        stepExecutionRepository.update(first);
+
+        var second = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        second.stepExecution().complete();
+        stepExecutionRepository.update(second);
+
+        Mockito.doThrow(new IllegalStateException("Event persistence failed"))
+                .when(eventRepository)
+                .append(Mockito.argThat(event ->
+                        event.eventType() == WorkflowEventType.COMPLETED
+                ));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> stepExecutionEngine.claimNextStep(workflowId)
+                ).isInstanceOf(IllegalStateException.class)
+                .hasMessage("Event persistence failed");
+
+        var persisted = workflowExecutionService.getById(workflowId);
+
+        assertThat(persisted.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.RUNNING);
+
+        assertThat(persisted.version()).isEqualTo(1);
     }
 }

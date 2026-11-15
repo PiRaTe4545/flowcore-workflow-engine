@@ -25,6 +25,7 @@ class StepExecutionEngineTest {
     private WorkflowExecutionRepository workflowRepository;
     private WorkflowDefinitionRepository definitionRepository;
     private StepExecutionRepository stepExecutionRepository;
+    private WorkflowExecutionService workflowExecutionService;
 
     private StepExecutionEngine engine;
 
@@ -35,11 +36,13 @@ class StepExecutionEngineTest {
         workflowRepository = mock(WorkflowExecutionRepository.class);
         definitionRepository = mock(WorkflowDefinitionRepository.class);
         stepExecutionRepository = mock(StepExecutionRepository.class);
+        workflowExecutionService = mock(WorkflowExecutionService.class);
 
         engine = new StepExecutionEngine(
                 workflowRepository,
                 definitionRepository,
-                stepExecutionRepository
+                stepExecutionRepository,
+                workflowExecutionService
         );
 
         workflowId = UUID.randomUUID();
@@ -366,6 +369,99 @@ class StepExecutionEngineTest {
 
         verify(stepExecutionRepository)
                 .update(any(PersistedStepExecution.class));
+    }
+
+    @Test
+    void shouldCompleteWorkflowWhenAllStepsAreCompleted() {
+        WorkflowDefinition definition = definitionWithTwoSteps();
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution first = StepExecution.create(
+                workflowId, "validate-order"
+        );
+        first.start(null);
+        first.complete();
+
+        StepExecution second = StepExecution.create(
+                workflowId, "wait-for-payment"
+        );
+        second.start(null);
+        second.complete();
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 0)
+                ));
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING", 1
+        )).thenReturn(Optional.of(definition));
+
+        when(stepExecutionRepository.findByWorkflowId(workflowId))
+                .thenReturn(List.of(
+                        new PersistedStepExecution(first, 2),
+                        new PersistedStepExecution(second, 2)
+                ));
+
+        Optional<PersistedStepExecution> result =
+                engine.claimNextStep(workflowId);
+
+        assertThat(result).isEmpty();
+
+        verify(workflowExecutionService).complete(workflowId);
+
+        verify(stepExecutionRepository, never())
+                .update(any(PersistedStepExecution.class));
+    }
+
+    @Test
+    void shouldNotCompleteWorkflowWhenStepsAreStillPending() {
+        WorkflowDefinition definition = definitionWithTwoSteps();
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution first = StepExecution.create(
+                workflowId, "validate-order"
+        );
+        first.start(null);
+        first.complete();
+
+        StepExecution second = StepExecution.create(
+                workflowId, "wait-for-payment"
+        );
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 0)
+                ));
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING", 1
+        )).thenReturn(Optional.of(definition));
+
+        when(stepExecutionRepository.findByWorkflowId(workflowId))
+                .thenReturn(List.of(
+                        new PersistedStepExecution(first, 2),
+                        new PersistedStepExecution(second, 0)
+                ));
+
+        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
+                .thenAnswer(invocation -> {
+                    PersistedStepExecution persisted = invocation.getArgument(0);
+
+                    return new PersistedStepExecution(
+                            persisted.stepExecution(),
+                            persisted.version() + 1
+                    );
+                });
+
+        Optional<PersistedStepExecution> result =
+                engine.claimNextStep(workflowId);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().stepExecution().getStepName())
+                .isEqualTo("wait-for-payment");
+
+        verify(workflowExecutionService, never()).complete(workflowId);
     }
 
     private WorkflowDefinition definitionWithTwoSteps() {

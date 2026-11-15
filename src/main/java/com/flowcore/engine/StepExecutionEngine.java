@@ -1,10 +1,7 @@
 
 package com.flowcore.engine;
 
-import com.flowcore.application.PersistedStepExecution;
-import com.flowcore.application.StepExecutionRepository;
-import com.flowcore.application.WorkflowDefinitionRepository;
-import com.flowcore.application.WorkflowExecutionRepository;
+import com.flowcore.application.*;
 import com.flowcore.definition.model.WorkflowDefinition;
 import com.flowcore.definition.model.WorkflowStepDefinition;
 import com.flowcore.domain.StepExecutionStatus;
@@ -26,15 +23,18 @@ public class StepExecutionEngine {
     private final WorkflowExecutionRepository workflowRepository;
     private final WorkflowDefinitionRepository definitionRepository;
     private final StepExecutionRepository stepExecutionRepository;
+    private final WorkflowExecutionService workflowExecutionService;
 
     public StepExecutionEngine(
             WorkflowExecutionRepository workflowRepository,
             WorkflowDefinitionRepository definitionRepository,
-            StepExecutionRepository stepExecutionRepository
+            StepExecutionRepository stepExecutionRepository,
+            WorkflowExecutionService workflowExecutionService
     ) {
         this.workflowRepository = workflowRepository;
         this.definitionRepository = definitionRepository;
         this.stepExecutionRepository = stepExecutionRepository;
+        this.workflowExecutionService = workflowExecutionService;
     }
 
     @Transactional
@@ -110,6 +110,8 @@ public class StepExecutionEngine {
                     stepExecutionRepository.update(persistedStep)
             );
         }
+
+        workflowExecutionService.complete(workflowId);
 
         return Optional.empty();
     }
