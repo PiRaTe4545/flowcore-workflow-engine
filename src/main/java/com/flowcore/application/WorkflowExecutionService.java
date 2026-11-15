@@ -1,12 +1,11 @@
 
 package com.flowcore.application;
 
-import com.flowcore.domain.WorkflowExecution;
+import com.flowcore.definition.model.WorkflowDefinition;
+import com.flowcore.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import com.flowcore.domain.WorkflowExecutionEvent;
-import com.flowcore.domain.WorkflowEventType;
-import com.flowcore.domain.WorkflowStatus;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -23,13 +22,18 @@ public class WorkflowExecutionService {
 
     private final WorkflowExecutionEventRepository eventRepository;
 
+    private final StepExecutionRepository stepExecutionRepository;
+
     public WorkflowExecutionService(
             WorkflowExecutionRepository repository,
-            WorkflowDefinitionRepository definitionRepository, WorkflowExecutionEventRepository eventRepository
+            WorkflowDefinitionRepository definitionRepository,
+            WorkflowExecutionEventRepository eventRepository,
+            StepExecutionRepository stepExecutionRepository
     ) {
         this.repository = repository;
         this.definitionRepository = definitionRepository;
         this.eventRepository = eventRepository;
+        this.stepExecutionRepository = stepExecutionRepository;
     }
 
     @Transactional
@@ -38,15 +42,16 @@ public class WorkflowExecutionService {
             int definitionVersion,
             Map<String, Object> inputPayload
     ) {
-        definitionRepository.findByTypeAndVersion(
-                workflowType,
-                definitionVersion
-        ).orElseThrow(() ->
-                new WorkflowDefinitionNotFoundException(
+        WorkflowDefinition definition =
+                definitionRepository.findByTypeAndVersion(
                         workflowType,
                         definitionVersion
-                )
-        );
+                ).orElseThrow(() ->
+                        new WorkflowDefinitionNotFoundException(
+                                workflowType,
+                                definitionVersion
+                        )
+                );
 
         WorkflowExecution execution = WorkflowExecution.create(
                 workflowType,
@@ -54,6 +59,15 @@ public class WorkflowExecutionService {
                 inputPayload
         );
         PersistedWorkflowExecution persisted = repository.save(execution);
+
+        for (var stepDefinition : definition.steps()) {
+            StepExecution stepExecution = StepExecution.create(
+                    execution.getWorkflowId(),
+                    stepDefinition.name()
+            );
+
+            stepExecutionRepository.save(stepExecution);
+        }
 
         eventRepository.append(
                 new WorkflowExecutionEvent(

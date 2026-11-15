@@ -54,6 +54,7 @@ class WorkflowExecutionTransactionTest {
     @BeforeEach
     void cleanDatabase() {
         jdbcTemplate.update("DELETE FROM workflow_execution_events");
+        jdbcTemplate.update("DELETE FROM workflow_step_executions");
         jdbcTemplate.update("DELETE FROM workflow_executions");
 
         if (definitionRepository
@@ -68,6 +69,10 @@ class WorkflowExecutionTransactionTest {
                                     new com.flowcore.definition.model.WorkflowStepDefinition(
                                             "validate-order",
                                             com.flowcore.definition.model.StepType.SERVICE_TASK
+                                    ),
+                                    new com.flowcore.definition.model.WorkflowStepDefinition(
+                                            "wait-for-payment",
+                                            com.flowcore.definition.model.StepType.WAIT
                                     )
                             )
                     )
@@ -103,6 +108,15 @@ class WorkflowExecutionTransactionTest {
         );
 
         assertThat(executionCount).isZero();
+        Integer stepCount = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM workflow_step_executions
+                """,
+                Integer.class
+        );
+
+        assertThat(stepCount).isZero();
     }
 
     @Test
@@ -140,5 +154,61 @@ class WorkflowExecutionTransactionTest {
 
         assertEquals("PENDING", result.get("status"));
         assertEquals(0L, ((Number) result.get("version")).longValue());
+    }
+
+
+    @Test
+    void shouldPersistWorkflowAndStepExecutionsTogether() {
+        PersistedWorkflowExecution created = workflowExecutionService.create(
+                "ORDER_PROCESSING",
+                1,
+                Map.of("orderId", "order-success-123")
+        );
+
+        Integer executionCount = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM workflow_executions
+                WHERE workflow_id = ?
+                """,
+                Integer.class,
+                created.workflowExecution().getWorkflowId()
+        );
+
+        Integer stepCount = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM workflow_step_executions
+                WHERE workflow_id = ?
+                """,
+                Integer.class,
+                created.workflowExecution().getWorkflowId()
+        );
+
+        assertThat(executionCount).isEqualTo(1);
+        assertThat(stepCount).isEqualTo(2);
+
+        java.util.List<String> stepNames = jdbcTemplate.queryForList(
+                """
+                SELECT step_name
+                FROM workflow_step_executions
+                WHERE workflow_id = ?
+                ORDER BY created_at ASC, step_execution_id ASC
+                """,
+                String.class,
+                created.workflowExecution().getWorkflowId()
+        );
+
+        assertThat(stepNames).containsExactly(
+                "validate-order",
+                "wait-for-payment"
+        );
+
+        Mockito.verify(eventRepository).append(
+                Mockito.argThat(event ->
+                        event.eventType() ==
+                                com.flowcore.domain.WorkflowEventType.CREATED
+                )
+        );
     }
 }

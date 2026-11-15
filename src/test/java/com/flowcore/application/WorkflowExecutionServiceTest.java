@@ -32,6 +32,9 @@ class WorkflowExecutionServiceTest {
     private WorkflowDefinitionRepository definitionRepository;
 
     @Mock
+    private StepExecutionRepository stepExecutionRepository;
+
+    @Mock
     private WorkflowExecutionEventRepository eventRepository;
 
     private WorkflowExecutionService service;
@@ -41,7 +44,8 @@ class WorkflowExecutionServiceTest {
         service = new WorkflowExecutionService(
                 repository,
                 definitionRepository,
-                eventRepository
+                eventRepository,
+                stepExecutionRepository
         );
     }
 
@@ -289,6 +293,8 @@ class WorkflowExecutionServiceTest {
         verify(repository, never()).save(any());
         verify(repository, never()).save(any());
         verify(eventRepository, never()).append(any());
+        verify(stepExecutionRepository, never())
+                .save(any(StepExecution.class));
     }
 
 
@@ -336,6 +342,59 @@ class WorkflowExecutionServiceTest {
                 .isInstanceOf(WorkflowExecutionNotFoundException.class);
 
         verify(eventRepository, never()).findByWorkflowId(any());
+    }
+
+    @Test
+    void shouldCreateStepExecutionsInDefinitionOrder() {
+        Map<String, Object> payload = Map.of(
+                "orderId", "order-123"
+        );
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING",
+                1
+        )).thenReturn(Optional.of(createDefinition()));
+
+        when(repository.save(any(WorkflowExecution.class)))
+                .thenAnswer(invocation ->
+                        new PersistedWorkflowExecution(
+                                invocation.getArgument(0),
+                                0
+                        )
+                );
+
+        PersistedWorkflowExecution result = service.create(
+                "ORDER_PROCESSING",
+                1,
+                payload
+        );
+
+        org.mockito.ArgumentCaptor<StepExecution> captor =
+                org.mockito.ArgumentCaptor.forClass(StepExecution.class);
+
+        verify(stepExecutionRepository, times(2))
+                .save(captor.capture());
+
+        assertThat(captor.getAllValues())
+                .extracting(StepExecution::getStepName)
+                .containsExactly(
+                        "validate-order",
+                        "wait-for-payment"
+                );
+
+        assertThat(captor.getAllValues())
+                .allSatisfy(step ->
+                        assertThat(step.getWorkflowId())
+                                .isEqualTo(
+                                        result.workflowExecution().getWorkflowId()
+                                )
+                );
+
+        assertThat(captor.getAllValues())
+                .allSatisfy(step ->
+                        assertThat(step.getStatus())
+                                .isEqualTo(StepExecutionStatus.PENDING)
+                );
     }
 
 
