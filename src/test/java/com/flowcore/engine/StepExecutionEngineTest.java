@@ -93,6 +93,39 @@ class StepExecutionEngineTest {
     }
 
     @Test
+    void shouldRejectStepThatDoesNotBelongToWorkflow() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution step = StepExecution.create(
+                UUID.randomUUID(),
+                "validate-order"
+        );
+        step.start(null);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 1)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(
+                        new PersistedStepExecution(step, 1)
+                ));
+
+        assertThatThrownBy(() ->
+                engine.handleStepSuccess(
+                        workflowId,
+                        step.getStepExecutionId()
+                )
+        )
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not belong to workflow");
+
+        verify(stepExecutionRepository, never())
+                .update(any(PersistedStepExecution.class));
+    }
+
+    @Test
     void shouldNotClaimSecondStepWhileFirstStepIsRunning() {
         WorkflowDefinition definition = definitionWithTwoSteps();
 
@@ -465,6 +498,55 @@ class StepExecutionEngineTest {
     }
 
     @Test
+    void shouldCompleteRunningStep() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+        step.start(null);
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 1);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 1)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(persistedStep));
+
+        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
+                .thenAnswer(invocation -> {
+                    PersistedStepExecution persisted = invocation.getArgument(0);
+                    return new PersistedStepExecution(
+                            persisted.stepExecution(),
+                            persisted.version() + 1
+                    );
+                });
+
+        PersistedStepExecution result = engine.handleStepSuccess(
+                workflowId,
+                step.getStepExecutionId()
+        );
+
+        assertThat(result.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.COMPLETED);
+
+        assertThat(result.stepExecution().getTimeoutAt()).isNull();
+
+        assertThat(result.stepExecution().getNextRetryAt()).isNull();
+
+        verify(stepExecutionRepository).update(persistedStep);
+
+        verifyNoInteractions(definitionRepository);
+
+        verify(workflowExecutionService, never()).complete(workflowId);
+    }
+
+    @Test
     void shouldScheduleRetryWhenAttemptsRemain() {
         WorkflowExecution workflow = runningWorkflow();
 
@@ -654,6 +736,7 @@ class StepExecutionEngineTest {
                 )
         );
     }
+
 
     private WorkflowExecution runningWorkflow() {
         WorkflowExecution workflow = WorkflowExecution.create(

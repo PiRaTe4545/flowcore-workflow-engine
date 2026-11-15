@@ -605,4 +605,100 @@ class WorkflowExecutionTransactionTest {
 
         assertThat(persistedWorkflow.version()).isEqualTo(1);
     }
+
+    @Test
+    void shouldPersistStepCompletionAndAllowNextStepToBeClaimed() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-step-success")
+                );
+
+        var workflowId = created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        // Claim the first step.
+        var firstClaim = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        // Report successful completion.
+        var completedStep = stepExecutionEngine.handleStepSuccess(
+                workflowId,
+                firstClaim.stepExecution().getStepExecutionId()
+        );
+
+        assertThat(completedStep.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.COMPLETED);
+
+        // Verify completion survived a database reload.
+        var persistedFirstStep = stepExecutionRepository
+                .findById(firstClaim.stepExecution().getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persistedFirstStep.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.COMPLETED);
+
+        // The engine should now allow the second step to be claimed.
+        var secondClaim = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        assertThat(secondClaim.stepExecution().getStepName())
+                .isEqualTo("wait-for-payment");
+
+        assertThat(secondClaim.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.RUNNING);
+
+        // Workflow remains active while the second step is running.
+        var persistedWorkflow = workflowExecutionService.getById(workflowId);
+
+        assertThat(persistedWorkflow.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.RUNNING);
+    }
+
+    @Test
+    void shouldCompleteWorkflowAfterFinalStepCompletes() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-complete")
+                );
+
+        var workflowId = created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        // Complete first step.
+        var firstClaim = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        stepExecutionEngine.handleStepSuccess(
+                workflowId,
+                firstClaim.stepExecution().getStepExecutionId()
+        );
+
+        // Claim and complete second step.
+        var secondClaim = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        stepExecutionEngine.handleStepSuccess(
+                workflowId,
+                secondClaim.stepExecution().getStepExecutionId()
+        );
+
+        // No more steps should be claimable.
+        var nextClaim = stepExecutionEngine.claimNextStep(workflowId);
+
+        assertThat(nextClaim).isEmpty();
+
+        // Workflow should now be completed.
+        var persistedWorkflow = workflowExecutionService.getById(workflowId);
+
+        assertThat(persistedWorkflow.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+
+        assertThat(persistedWorkflow.version()).isEqualTo(2);
+    }
 }

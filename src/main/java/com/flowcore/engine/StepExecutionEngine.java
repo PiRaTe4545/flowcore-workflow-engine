@@ -194,4 +194,40 @@ public class StepExecutionEngine {
         return failedStep;
     }
 
+    @Transactional
+    public PersistedStepExecution handleStepSuccess(
+            UUID workflowId,
+            UUID stepExecutionId
+    ) {
+        var persistedWorkflow = workflowRepository.findById(workflowId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Workflow not found: " + workflowId
+                ));
+
+        if (persistedWorkflow.workflowExecution().getStatus()
+                != WorkflowStatus.RUNNING) {
+            throw new IllegalStateException(
+                    "Cannot complete a step when workflow is not RUNNING"
+            );
+        }
+
+        PersistedStepExecution persistedStep =
+                stepExecutionRepository.findById(stepExecutionId)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "Step execution not found: " + stepExecutionId
+                        ));
+
+        var step = persistedStep.stepExecution();
+
+        if (!step.getWorkflowId().equals(workflowId)) {
+            throw new IllegalArgumentException(
+                    "Step execution does not belong to workflow: " + workflowId
+            );
+        }
+
+        step.complete();
+
+        return stepExecutionRepository.update(persistedStep);
+    }
+
 }
