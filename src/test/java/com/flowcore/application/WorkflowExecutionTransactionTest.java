@@ -1,6 +1,10 @@
 
 package com.flowcore.application;
 
+import com.flowcore.definition.model.RetryPolicy;
+import com.flowcore.definition.model.StepType;
+import com.flowcore.definition.model.WorkflowDefinition;
+import com.flowcore.definition.model.WorkflowStepDefinition;
 import com.flowcore.domain.WorkflowEventType;
 import com.flowcore.domain.WorkflowExecutionEvent;
 import com.flowcore.domain.WorkflowStatus;
@@ -19,6 +23,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -415,5 +422,187 @@ class WorkflowExecutionTransactionTest {
                 .isEqualTo(WorkflowStatus.RUNNING);
 
         assertThat(persisted.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldRollbackStepAndWorkflowFailureWhenEventPersistenceFails() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-failure-rollback")
+                );
+
+        var workflowId = created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        var claimed = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        // Force the workflow FAILED event to fail.
+        Mockito.doThrow(new IllegalStateException("Event persistence failed"))
+                .when(eventRepository)
+                .append(Mockito.argThat(event ->
+                        event.eventType() == WorkflowEventType.FAILED
+                ));
+
+        assertThatThrownBy(() ->
+                stepExecutionEngine.handleStepFailure(
+                        workflowId,
+                        claimed.stepExecution().getStepExecutionId(),
+                        "Permanent service failure"
+                )
+        )
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Event persistence failed");
+
+        // The step update must have rolled back.
+        var persistedStep = stepExecutionRepository
+                .findById(claimed.stepExecution().getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persistedStep.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.RUNNING);
+
+        assertThat(persistedStep.stepExecution().getLastError())
+                .isNull();
+
+        // The workflow update must also have rolled back.
+        var persistedWorkflow = workflowExecutionService.getById(workflowId);
+
+        assertThat(persistedWorkflow.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.RUNNING);
+
+        assertThat(persistedWorkflow.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldPersistStepAndWorkflowFailureTogether() {
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        "ORDER_PROCESSING",
+                        1,
+                        Map.of("orderId", "order-permanent-failure")
+                );
+
+        var workflowId = created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        var claimed = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        var failedStep = stepExecutionEngine.handleStepFailure(
+                workflowId,
+                claimed.stepExecution().getStepExecutionId(),
+                "Permanent service failure"
+        );
+
+        // Verify the step failure was persisted.
+        var persistedStep = stepExecutionRepository
+                .findById(failedStep.stepExecution().getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persistedStep.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.FAILED);
+
+        assertThat(persistedStep.stepExecution().getAttemptCount())
+                .isEqualTo(1);
+
+        assertThat(persistedStep.stepExecution().getLastError())
+                .isEqualTo("Permanent service failure");
+
+        assertThat(persistedStep.stepExecution().getNextRetryAt())
+                .isNull();
+
+        // Verify the workflow failure was persisted.
+        var persistedWorkflow = workflowExecutionService.getById(workflowId);
+
+        assertThat(persistedWorkflow.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.FAILED);
+
+        assertThat(persistedWorkflow.version()).isEqualTo(2);
+
+        // Verify the FAILED event was emitted.
+        Mockito.verify(eventRepository).append(Mockito.argThat(event ->
+                event.workflowId().equals(workflowId)
+                        && event.eventType() == WorkflowEventType.FAILED
+        ));
+    }
+
+    @Test
+    void shouldPersistStepRetryScheduleAndKeepWorkflowRunning() {
+        String workflowType = "RETRY_PROCESSING";
+
+        if (definitionRepository
+                .findByTypeAndVersion(workflowType, 1)
+                .isEmpty()) {
+
+            definitionRepository.register(
+                    new WorkflowDefinition(
+                            workflowType,
+                            1,
+                            List.of(
+                                    new WorkflowStepDefinition(
+                                            "retryable-step",
+                                            StepType.SERVICE_TASK,
+                                            new RetryPolicy(
+                                                    2,
+                                                    Duration.ofSeconds(5),
+                                                    2.0,
+                                                    Duration.ofSeconds(30)
+                                            ),
+                                            null
+                                    )
+                            )
+                    )
+            );
+        }
+
+        PersistedWorkflowExecution created =
+                workflowExecutionService.create(
+                        workflowType,
+                        1,
+                        Map.of("orderId", "order-retry")
+                );
+
+        var workflowId = created.workflowExecution().getWorkflowId();
+
+        workflowExecutionService.start(workflowId);
+
+        var claimed = stepExecutionEngine.claimNextStep(workflowId)
+                .orElseThrow();
+
+        var failedStep = stepExecutionEngine.handleStepFailure(
+                workflowId,
+                claimed.stepExecution().getStepExecutionId(),
+                "Temporary service failure"
+        );
+
+        var persistedStep = stepExecutionRepository
+                .findById(failedStep.stepExecution().getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persistedStep.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.PENDING);
+
+        assertThat(persistedStep.stepExecution().getAttemptCount())
+                .isEqualTo(1);
+
+        assertThat(persistedStep.stepExecution().getLastError())
+                .isEqualTo("Temporary service failure");
+
+        assertThat(persistedStep.stepExecution().getNextRetryAt())
+                .isNotNull()
+                .isAfter(Instant.now());
+
+        // Retry scheduling must not fail the workflow.
+        var persistedWorkflow = workflowExecutionService.getById(workflowId);
+
+        assertThat(persistedWorkflow.workflowExecution().getStatus())
+                .isEqualTo(WorkflowStatus.RUNNING);
+
+        assertThat(persistedWorkflow.version()).isEqualTo(1);
     }
 }

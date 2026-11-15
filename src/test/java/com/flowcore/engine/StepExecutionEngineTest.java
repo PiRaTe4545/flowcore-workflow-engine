@@ -464,6 +464,180 @@ class StepExecutionEngineTest {
         verify(workflowExecutionService, never()).complete(workflowId);
     }
 
+    @Test
+    void shouldScheduleRetryWhenAttemptsRemain() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        RetryPolicy retryPolicy = new RetryPolicy(
+                3,
+                Duration.ofSeconds(5),
+                2.0,
+                Duration.ofSeconds(30)
+        );
+
+        WorkflowDefinition definition = new WorkflowDefinition(
+                "ORDER_PROCESSING",
+                1,
+                List.of(
+                        new WorkflowStepDefinition(
+                                "validate-order",
+                                StepType.SERVICE_TASK,
+                                retryPolicy,
+                                null
+                        ),
+                        new WorkflowStepDefinition(
+                                "wait-for-payment",
+                                StepType.WAIT
+                        )
+                )
+        );
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+        step.start(null);
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 1);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 0)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(persistedStep));
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING", 1
+        )).thenReturn(Optional.of(definition));
+
+        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
+                .thenAnswer(invocation -> {
+                    PersistedStepExecution persisted = invocation.getArgument(0);
+                    return new PersistedStepExecution(
+                            persisted.stepExecution(),
+                            persisted.version() + 1
+                    );
+                });
+
+        Instant beforeFailure = Instant.now();
+
+        PersistedStepExecution result = engine.handleStepFailure(
+                workflowId,
+                step.getStepExecutionId(),
+                "Temporary service failure"
+        );
+
+        Instant afterFailure = Instant.now();
+
+        assertThat(result.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.PENDING);
+
+        assertThat(result.stepExecution().getAttemptCount())
+                .isEqualTo(1);
+
+        assertThat(result.stepExecution().getLastError())
+                .isEqualTo("Temporary service failure");
+
+        assertThat(result.stepExecution().getNextRetryAt())
+                .isAfterOrEqualTo(beforeFailure.plusSeconds(5))
+                .isBeforeOrEqualTo(afterFailure.plusSeconds(5));
+
+        verify(stepExecutionRepository).update(persistedStep);
+        verify(workflowExecutionService, never()).fail(workflowId);
+    }
+
+    @Test
+    void shouldFailStepAndWorkflowWhenMaximumAttemptsReached() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        RetryPolicy retryPolicy = new RetryPolicy(
+                2,
+                Duration.ofSeconds(5),
+                2.0,
+                Duration.ofSeconds(30)
+        );
+
+        WorkflowDefinition definition = new WorkflowDefinition(
+                "ORDER_PROCESSING",
+                1,
+                List.of(
+                        new WorkflowStepDefinition(
+                                "validate-order",
+                                StepType.SERVICE_TASK,
+                                retryPolicy,
+                                null
+                        ),
+                        new WorkflowStepDefinition(
+                                "wait-for-payment",
+                                StepType.WAIT
+                        )
+                )
+        );
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+
+        // First attempt.
+        step.start(null);
+
+        // Simulate a retry.
+        step.scheduleRetry(
+                Instant.now().minusSeconds(10),
+                "First attempt failed"
+        );
+        step.start(null);
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 3);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 0)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(persistedStep));
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING", 1
+        )).thenReturn(Optional.of(definition));
+
+        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
+                .thenAnswer(invocation -> {
+                    PersistedStepExecution persisted = invocation.getArgument(0);
+                    return new PersistedStepExecution(
+                            persisted.stepExecution(),
+                            persisted.version() + 1
+                    );
+                });
+
+        PersistedStepExecution result = engine.handleStepFailure(
+                workflowId,
+                step.getStepExecutionId(),
+                "Second attempt failed"
+        );
+
+        assertThat(result.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.FAILED);
+
+        assertThat(result.stepExecution().getAttemptCount())
+                .isEqualTo(2);
+
+        assertThat(result.stepExecution().getLastError())
+                .isEqualTo("Second attempt failed");
+
+        assertThat(result.stepExecution().getNextRetryAt())
+                .isNull();
+
+        verify(stepExecutionRepository).update(persistedStep);
+        verify(workflowExecutionService).fail(workflowId);
+    }
+
     private WorkflowDefinition definitionWithTwoSteps() {
         return new WorkflowDefinition(
                 "ORDER_PROCESSING",
