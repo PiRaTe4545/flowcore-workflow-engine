@@ -2,6 +2,9 @@
 package com.flowcore.domain;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -16,6 +19,7 @@ public class StepExecution {
     private Instant nextRetryAt;
     private Instant timeoutAt;
     private String lastError;
+    private Map<String, Object> outputPayload;
     private final Instant createdAt;
     private Instant updatedAt;
 
@@ -28,6 +32,7 @@ public class StepExecution {
             Instant nextRetryAt,
             Instant timeoutAt,
             String lastError,
+            Map<String, Object> outputPayload,
             Instant createdAt,
             Instant updatedAt
     ) {
@@ -48,13 +53,15 @@ public class StepExecution {
 
         if (updatedAt.isBefore(createdAt)) {
             throw new IllegalArgumentException(
-                    "updatedAt cannot be before createdAt");
+                    "updatedAt cannot be before createdAt"
+            );
         }
 
         this.attemptCount = attemptCount;
         this.nextRetryAt = nextRetryAt;
         this.timeoutAt = timeoutAt;
         this.lastError = lastError;
+        this.outputPayload = immutablePayload(outputPayload);
     }
 
     public static StepExecution create(UUID workflowId, String stepName) {
@@ -69,6 +76,7 @@ public class StepExecution {
                 null,
                 null,
                 null,
+                Map.of(),
                 now,
                 now
         );
@@ -86,6 +94,34 @@ public class StepExecution {
             Instant createdAt,
             Instant updatedAt
     ) {
+        return restore(
+                stepExecutionId,
+                workflowId,
+                stepName,
+                status,
+                attemptCount,
+                nextRetryAt,
+                timeoutAt,
+                lastError,
+                Map.of(),
+                createdAt,
+                updatedAt
+        );
+    }
+
+    public static StepExecution restore(
+            UUID stepExecutionId,
+            UUID workflowId,
+            String stepName,
+            StepExecutionStatus status,
+            int attemptCount,
+            Instant nextRetryAt,
+            Instant timeoutAt,
+            String lastError,
+            Map<String, Object> outputPayload,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
         return new StepExecution(
                 stepExecutionId,
                 workflowId,
@@ -95,6 +131,7 @@ public class StepExecution {
                 nextRetryAt,
                 timeoutAt,
                 lastError,
+                outputPayload,
                 createdAt,
                 updatedAt
         );
@@ -122,8 +159,13 @@ public class StepExecution {
     }
 
     public void complete() {
+        complete(Map.of());
+    }
+
+    public void complete(Map<String, Object> outputPayload) {
         requireStatus(StepExecutionStatus.RUNNING);
 
+        this.outputPayload = immutablePayload(outputPayload);
         this.status = StepExecutionStatus.COMPLETED;
         this.timeoutAt = null;
         this.nextRetryAt = null;
@@ -166,6 +208,16 @@ public class StepExecution {
         return error;
     }
 
+    private Map<String, Object> immutablePayload(
+            Map<String, Object> payload
+    ) {
+        Objects.requireNonNull(payload, "outputPayload cannot be null");
+
+        return Collections.unmodifiableMap(
+                new LinkedHashMap<>(payload)
+        );
+    }
+
     private void touch() {
         this.updatedAt = Instant.now();
     }
@@ -200,6 +252,10 @@ public class StepExecution {
 
     public String getLastError() {
         return lastError;
+    }
+
+    public Map<String, Object> getOutputPayload() {
+        return outputPayload;
     }
 
     public Instant getCreatedAt() {

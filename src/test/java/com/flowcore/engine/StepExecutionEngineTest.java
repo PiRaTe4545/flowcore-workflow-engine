@@ -291,6 +291,7 @@ class StepExecutionEngineTest {
                         new WorkflowStepDefinition(
                                 "validate-order",
                                 StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
                                 null,
                                 new TimeoutPolicy(Duration.ofMinutes(2))
                         ),
@@ -564,6 +565,7 @@ class StepExecutionEngineTest {
                         new WorkflowStepDefinition(
                                 "validate-order",
                                 StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
                                 retryPolicy,
                                 null
                         ),
@@ -649,6 +651,7 @@ class StepExecutionEngineTest {
                         new WorkflowStepDefinition(
                                 "validate-order",
                                 StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
                                 retryPolicy,
                                 null
                         ),
@@ -720,6 +723,7 @@ class StepExecutionEngineTest {
         verify(workflowExecutionService).fail(workflowId);
     }
 
+
     private WorkflowDefinition definitionWithTwoSteps() {
         return new WorkflowDefinition(
                 "ORDER_PROCESSING",
@@ -727,7 +731,10 @@ class StepExecutionEngineTest {
                 List.of(
                         new WorkflowStepDefinition(
                                 "validate-order",
-                                StepType.SERVICE_TASK
+                                StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
+                                null,
+                                null
                         ),
                         new WorkflowStepDefinition(
                                 "wait-for-payment",
@@ -736,6 +743,7 @@ class StepExecutionEngineTest {
                 )
         );
     }
+
 
 
     private WorkflowExecution runningWorkflow() {

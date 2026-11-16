@@ -1,3 +1,4 @@
+
 package com.flowcore.application;
 
 import com.flowcore.definition.model.StepType;
@@ -77,7 +78,10 @@ class WorkflowDefinitionServiceTest {
                 List.of(
                         new WorkflowStepDefinition(
                                 "validate-order",
-                                StepType.SERVICE_TASK
+                                StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
+                                null,
+                                null
                         ),
                         new WorkflowStepDefinition(
                                 "wait-for-payment",

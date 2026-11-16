@@ -1,3 +1,4 @@
+
 package com.flowcore.persistence;
 
 import com.flowcore.application.WorkflowDefinitionRepository;
@@ -56,10 +57,18 @@ class PostgresWorkflowDefinitionRepositoryTest {
 
         assertEquals(definition, retrieved);
         assertEquals(2, retrieved.steps().size());
+
         assertEquals(
                 StepType.SERVICE_TASK,
                 retrieved.steps().get(0).type()
         );
+        assertEquals(
+                "ORDER_VALIDATION",
+                retrieved.steps().get(0).taskType()
+        );
+
+        assertEquals(StepType.WAIT, retrieved.steps().get(1).type());
+        assertNull(retrieved.steps().get(1).taskType());
     }
 
     @Test
@@ -98,7 +107,6 @@ class PostgresWorkflowDefinitionRepositoryTest {
         );
     }
 
-
     @Test
     void shouldPersistAndRetrieveStepRetryPolicy() {
         RetryPolicy retryPolicy = new RetryPolicy(
@@ -115,7 +123,9 @@ class PostgresWorkflowDefinitionRepositoryTest {
                         new WorkflowStepDefinition(
                                 "validate-order",
                                 StepType.SERVICE_TASK,
-                                retryPolicy,null
+                                "ORDER_VALIDATION",
+                                retryPolicy,
+                                null
                         ),
                         new WorkflowStepDefinition(
                                 "wait-for-payment",
@@ -130,10 +140,10 @@ class PostgresWorkflowDefinitionRepositoryTest {
                 .findByTypeAndVersion("ORDER_PROCESSING", 1)
                 .orElseThrow();
 
-        RetryPolicy retrievedPolicy = retrieved.steps()
-                .get(0)
-                .retryPolicy();
+        WorkflowStepDefinition retrievedStep = retrieved.steps().get(0);
+        RetryPolicy retrievedPolicy = retrievedStep.retryPolicy();
 
+        assertEquals("ORDER_VALIDATION", retrievedStep.taskType());
         assertNotNull(retrievedPolicy);
         assertEquals(5, retrievedPolicy.maxAttempts());
         assertEquals(Duration.ofSeconds(2), retrievedPolicy.initialInterval());
@@ -141,6 +151,7 @@ class PostgresWorkflowDefinitionRepositoryTest {
         assertEquals(Duration.ofSeconds(30), retrievedPolicy.maxInterval());
 
         assertNull(retrieved.steps().get(1).retryPolicy());
+        assertNull(retrieved.steps().get(1).taskType());
     }
 
     @Test
@@ -155,12 +166,16 @@ class PostgresWorkflowDefinitionRepositoryTest {
                         new WorkflowStepDefinition(
                                 "process-payment",
                                 StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
                                 null,
                                 timeoutPolicy
                         ),
                         new WorkflowStepDefinition(
                                 "send-notification",
-                                StepType.SERVICE_TASK
+                                StepType.SERVICE_TASK,
+                                "NOTIFICATION",
+                                null,
+                                null
                         )
                 )
         );
@@ -172,13 +187,22 @@ class PostgresWorkflowDefinitionRepositoryTest {
                 .orElseThrow();
 
         assertEquals(
+                "ORDER_VALIDATION",
+                retrieved.steps().get(0).taskType()
+        );
+
+        assertEquals(
                 Duration.ofSeconds(60),
                 retrieved.steps().get(0).timeoutPolicy().timeout()
         );
 
+        assertEquals(
+                "NOTIFICATION",
+                retrieved.steps().get(1).taskType()
+        );
+
         assertNull(retrieved.steps().get(1).timeoutPolicy());
     }
-
 
     private WorkflowDefinition createDefinition(int version) {
         return new WorkflowDefinition(
@@ -187,7 +211,10 @@ class PostgresWorkflowDefinitionRepositoryTest {
                 List.of(
                         new WorkflowStepDefinition(
                                 "validate-order",
-                                StepType.SERVICE_TASK
+                                StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
+                                null,
+                                null
                         ),
                         new WorkflowStepDefinition(
                                 "wait-for-payment",

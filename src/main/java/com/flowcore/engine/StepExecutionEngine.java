@@ -2,11 +2,11 @@
 package com.flowcore.engine;
 
 import com.flowcore.application.*;
+import com.flowcore.definition.model.StepType;
 import com.flowcore.definition.model.WorkflowDefinition;
 import com.flowcore.definition.model.WorkflowStepDefinition;
 import com.flowcore.domain.StepExecutionStatus;
 import com.flowcore.domain.WorkflowStatus;
-import com.flowcore.definition.model.RetryPolicy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,6 +40,18 @@ public class StepExecutionEngine {
 
     @Transactional
     public Optional<PersistedStepExecution> claimNextStep(UUID workflowId) {
+        return claimNextStep(workflowId, false);
+    }
+
+    @Transactional
+    public Optional<PersistedStepExecution> claimNextServiceTask(UUID workflowId) {
+        return claimNextStep(workflowId, true);
+    }
+
+    private Optional<PersistedStepExecution> claimNextStep(
+            UUID workflowId,
+            boolean serviceTasksOnly
+    ) {
 
         var persistedWorkflow = workflowRepository.findById(workflowId)
                 .orElseThrow(() ->
@@ -88,8 +100,16 @@ public class StepExecutionEngine {
 
             var step = persistedStep.stepExecution();
 
+            // Completed steps must always be skipped first.
             if (step.getStatus() == StepExecutionStatus.COMPLETED) {
                 continue;
+            }
+
+            // Worker orchestration must not claim WAIT steps.
+            // A pending WAIT step blocks subsequent steps until handled.
+            if (serviceTasksOnly
+                    && stepDefinition.type() == StepType.WAIT) {
+                return Optional.empty();
             }
 
             if (step.getStatus() != StepExecutionStatus.PENDING) {
@@ -112,7 +132,15 @@ public class StepExecutionEngine {
             );
         }
 
-        workflowExecutionService.complete(workflowId);
+        boolean allStepsCompleted = persistedSteps.stream()
+                .allMatch(persisted ->
+                        persisted.stepExecution().getStatus()
+                                == StepExecutionStatus.COMPLETED
+                );
+
+        if (allStepsCompleted) {
+            workflowExecutionService.complete(workflowId);
+        }
 
         return Optional.empty();
     }
@@ -199,6 +227,15 @@ public class StepExecutionEngine {
             UUID workflowId,
             UUID stepExecutionId
     ) {
+        return handleStepSuccess(workflowId, stepExecutionId, Map.of());
+    }
+
+    @Transactional
+    public PersistedStepExecution handleStepSuccess(
+            UUID workflowId,
+            UUID stepExecutionId,
+            Map<String, Object> outputPayload
+    ) {
         var persistedWorkflow = workflowRepository.findById(workflowId)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Workflow not found: " + workflowId
@@ -225,9 +262,8 @@ public class StepExecutionEngine {
             );
         }
 
-        step.complete();
+        step.complete(outputPayload);
 
         return stepExecutionRepository.update(persistedStep);
     }
-
 }

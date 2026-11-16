@@ -1,3 +1,4 @@
+
 package com.flowcore.definition.model;
 
 import org.junit.jupiter.api.Test;
@@ -20,11 +21,14 @@ class WorkflowStepDefinitionTest {
         WorkflowStepDefinition step = new WorkflowStepDefinition(
                 "process-payment",
                 StepType.SERVICE_TASK,
-                retryPolicy,null
+                "ORDER_VALIDATION",
+                retryPolicy,
+                null
         );
 
         assertEquals("process-payment", step.name());
         assertEquals(StepType.SERVICE_TASK, step.type());
+        assertEquals("ORDER_VALIDATION", step.taskType());
         assertEquals(retryPolicy, step.retryPolicy());
     }
 
@@ -32,7 +36,10 @@ class WorkflowStepDefinitionTest {
     void shouldAllowStepWithoutExplicitRetryPolicy() {
         WorkflowStepDefinition step = new WorkflowStepDefinition(
                 "validate-order",
-                StepType.SERVICE_TASK
+                StepType.SERVICE_TASK,
+                "ORDER_VALIDATION",
+                null,
+                null
         );
 
         assertNull(step.retryPolicy());
@@ -44,7 +51,10 @@ class WorkflowStepDefinitionTest {
                 IllegalArgumentException.class,
                 () -> new WorkflowStepDefinition(
                         " ",
-                        StepType.SERVICE_TASK
+                        StepType.SERVICE_TASK,
+                        "ORDER_VALIDATION",
+                        null,
+                        null
                 )
         );
     }
@@ -75,6 +85,7 @@ class WorkflowStepDefinitionTest {
         WorkflowStepDefinition step = new WorkflowStepDefinition(
                 "process-payment",
                 StepType.SERVICE_TASK,
+                "ORDER_VALIDATION",
                 retryPolicy,
                 timeoutPolicy
         );
@@ -87,9 +98,40 @@ class WorkflowStepDefinitionTest {
     void shouldAllowStepWithoutTimeoutPolicy() {
         WorkflowStepDefinition step = new WorkflowStepDefinition(
                 "process-payment",
-                StepType.SERVICE_TASK
+                StepType.SERVICE_TASK,
+                "ORDER_VALIDATION",
+                null,
+                null
         );
 
         assertNull(step.timeoutPolicy());
+    }
+
+    @Test
+    void shouldRejectServiceTaskWithoutTaskType() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorkflowStepDefinition(
+                        "validate-order",
+                        StepType.SERVICE_TASK,
+                        null,
+                        null,
+                        null
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectWaitStepWithTaskType() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorkflowStepDefinition(
+                        "wait-for-payment",
+                        StepType.WAIT,
+                        "PAYMENT_PROCESSING",
+                        null,
+                        null
+                )
+        );
     }
 }

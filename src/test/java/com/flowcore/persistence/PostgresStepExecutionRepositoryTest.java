@@ -88,7 +88,74 @@ class PostgresStepExecutionRepositoryTest {
         assertThat(retrieved.stepExecution().getAttemptCount())
                 .isZero();
 
+        assertThat(retrieved.stepExecution().getOutputPayload())
+                .isEmpty();
+
         assertThat(retrieved.version()).isZero();
+    }
+
+    @Test
+    void shouldPersistAndRetrieveOutputPayload() {
+        StepExecution step = createStepExecution();
+
+        step.start(null);
+
+        Map<String, Object> output = Map.of(
+                "paymentId", "PAY-12345",
+                "paymentStatus", "APPROVED",
+                "amount", 149.99
+        );
+
+        step.complete(output);
+
+        stepRepository.save(step);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getOutputPayload())
+                .containsEntry("paymentId", "PAY-12345")
+                .containsEntry("paymentStatus", "APPROVED")
+                .containsEntry("amount", 149.99);
+    }
+
+    @Test
+    void shouldUpdateAndRetrieveOutputPayload() {
+        StepExecution step = createStepExecution();
+
+        stepRepository.save(step);
+
+        PersistedStepExecution persisted = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        persisted.stepExecution().start(null);
+
+        persisted.stepExecution().complete(
+                Map.of(
+                        "reservationId", "INV-789",
+                        "reservationStatus", "CONFIRMED"
+                )
+        );
+
+        PersistedStepExecution updated =
+                stepRepository.update(persisted);
+
+        assertThat(updated.version()).isEqualTo(1);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getOutputPayload())
+                .containsEntry("reservationId", "INV-789")
+                .containsEntry("reservationStatus", "CONFIRMED");
+
+        assertThat(retrieved.stepExecution().getStatus().name())
+                .isEqualTo("COMPLETED");
+
+        assertThat(retrieved.version()).isEqualTo(1);
     }
 
     @Test
@@ -220,6 +287,7 @@ class PostgresStepExecutionRepositoryTest {
                 workflow.getWorkflowId(),
                 "process-payment"
         );
+
         StepExecution inventory = StepExecution.create(
                 workflow.getWorkflowId(),
                 "reserve-inventory"

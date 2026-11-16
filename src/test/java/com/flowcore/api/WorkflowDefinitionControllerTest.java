@@ -1,3 +1,4 @@
+
 package com.flowcore.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -63,7 +64,9 @@ class WorkflowDefinitionControllerTest {
                 .andExpect(jsonPath("$.version").value(1))
                 .andExpect(jsonPath("$.steps.length()").value(2))
                 .andExpect(jsonPath("$.steps[0].name").value("validate-order"))
-                .andExpect(jsonPath("$.steps[0].type").value("SERVICE_TASK"));
+                .andExpect(jsonPath("$.steps[0].type").value("SERVICE_TASK"))
+                .andExpect(jsonPath("$.steps[0].taskType").value("ORDER_VALIDATION"))
+                .andExpect(jsonPath("$.steps[1].taskType").doesNotExist());
     }
 
     @Test
@@ -75,7 +78,8 @@ class WorkflowDefinitionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.workflowType").value("ORDER_PROCESSING"))
                 .andExpect(jsonPath("$.version").value(1))
-                .andExpect(jsonPath("$.steps.length()").value(2));
+                .andExpect(jsonPath("$.steps.length()").value(2))
+                .andExpect(jsonPath("$.steps[0].taskType").value("ORDER_VALIDATION"));
     }
 
     @Test
@@ -110,7 +114,6 @@ class WorkflowDefinitionControllerTest {
                 .andExpect(status().isBadRequest());
     }
 
-
     @Test
     void shouldRegisterAndRetrieveWorkflowDefinitionWithRetryPolicy() throws Exception {
         String request = """
@@ -121,6 +124,7 @@ class WorkflowDefinitionControllerTest {
                     {
                         "name": "process-payment",
                         "type": "SERVICE_TASK",
+                        "taskType": "PAYMENT_PROCESSING",
                         "retryPolicy": {
                             "maxAttempts": 5,
                             "initialInterval": "PT2S",
@@ -141,6 +145,7 @@ class WorkflowDefinitionControllerTest {
                         "/api/v1/workflow-definitions/RETRY_WORKFLOW/versions/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.steps[0].name").value("process-payment"))
+                .andExpect(jsonPath("$.steps[0].taskType").value("PAYMENT_PROCESSING"))
                 .andExpect(jsonPath("$.steps[0].retryPolicy.maxAttempts").value(5))
                 .andExpect(jsonPath("$.steps[0].retryPolicy.initialInterval").value("PT2S"))
                 .andExpect(jsonPath("$.steps[0].retryPolicy.backoffMultiplier").value(2.0))
@@ -157,6 +162,7 @@ class WorkflowDefinitionControllerTest {
                     {
                         "name": "process-payment",
                         "type": "SERVICE_TASK",
+                        "taskType": "PAYMENT_PROCESSING",
                         "retryPolicy": {
                             "maxAttempts": 0,
                             "initialInterval": "PT2S",
@@ -184,6 +190,7 @@ class WorkflowDefinitionControllerTest {
                     {
                         "name": "process-payment",
                         "type": "SERVICE_TASK",
+                        "taskType": "PAYMENT_PROCESSING",
                         "timeoutPolicy": {
                             "timeout": "PT60S"
                         }
@@ -201,6 +208,7 @@ class WorkflowDefinitionControllerTest {
                         "/api/v1/workflow-definitions/TIMEOUT_WORKFLOW/versions/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.steps[0].name").value("process-payment"))
+                .andExpect(jsonPath("$.steps[0].taskType").value("PAYMENT_PROCESSING"))
                 .andExpect(jsonPath("$.steps[0].timeoutPolicy.timeout").value("PT1M"));
     }
 
@@ -214,6 +222,7 @@ class WorkflowDefinitionControllerTest {
                     {
                         "name": "process-payment",
                         "type": "SERVICE_TASK",
+                        "taskType": "PAYMENT_PROCESSING",
                         "timeoutPolicy": {
                             "timeout": "PT0S"
                         }
@@ -227,7 +236,6 @@ class WorkflowDefinitionControllerTest {
                         .content(request))
                 .andExpect(status().isBadRequest());
     }
-
 
     private void registerDefinition(int version) throws Exception {
         mockMvc.perform(post("/api/v1/workflow-definitions")
@@ -243,7 +251,10 @@ class WorkflowDefinitionControllerTest {
                 List.of(
                         new WorkflowStepDefinition(
                                 "validate-order",
-                                StepType.SERVICE_TASK
+                                StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
+                                null,
+                                null
                         ),
                         new WorkflowStepDefinition(
                                 "wait-for-payment",

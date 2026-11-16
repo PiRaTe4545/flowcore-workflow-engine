@@ -64,10 +64,12 @@ class WorkflowExecutionServiceTest {
                             0
                     );
                 });
+
         when(definitionRepository.findByTypeAndVersion(
                 "ORDER_PROCESSING",
                 1
         )).thenReturn(Optional.of(createDefinition()));
+
         PersistedWorkflowExecution result = service.create(
                 "ORDER_PROCESSING",
                 1,
@@ -100,8 +102,8 @@ class WorkflowExecutionServiceTest {
                 1,
                 Map.of("orderId", "order-123"),
                 WorkflowStatus.PENDING,
-                java.time.Instant.now(),
-                java.time.Instant.now()
+                Instant.now(),
+                Instant.now()
         );
 
         PersistedWorkflowExecution persisted =
@@ -129,8 +131,8 @@ class WorkflowExecutionServiceTest {
                 1,
                 Map.of("orderId", "order-123"),
                 WorkflowStatus.PENDING,
-                java.time.Instant.now(),
-                java.time.Instant.now()
+                Instant.now(),
+                Instant.now()
         );
 
         PersistedWorkflowExecution persisted =
@@ -154,7 +156,6 @@ class WorkflowExecutionServiceTest {
 
         verify(repository).update(execution, 0);
     }
-
 
     @Test
     void shouldCompleteWorkflowExecution() {
@@ -220,7 +221,6 @@ class WorkflowExecutionServiceTest {
                 .isEqualTo(WorkflowStatus.CANCELLED);
     }
 
-
     private PersistedWorkflowExecution createRunningWorkflow() {
         WorkflowExecution execution = WorkflowExecution.restore(
                 UUID.randomUUID(),
@@ -228,13 +228,12 @@ class WorkflowExecutionServiceTest {
                 1,
                 Map.of("orderId", "order-123"),
                 WorkflowStatus.RUNNING,
-                java.time.Instant.now(),
-                java.time.Instant.now()
+                Instant.now(),
+                Instant.now()
         );
 
         return new PersistedWorkflowExecution(execution, 0);
     }
-
 
     @Test
     void shouldThrowExceptionWhenWorkflowDoesNotExist() {
@@ -259,8 +258,8 @@ class WorkflowExecutionServiceTest {
                 1,
                 Map.of("orderId", "order-123"),
                 WorkflowStatus.COMPLETED,
-                java.time.Instant.now(),
-                java.time.Instant.now()
+                Instant.now(),
+                Instant.now()
         );
 
         PersistedWorkflowExecution persisted =
@@ -291,12 +290,10 @@ class WorkflowExecutionServiceTest {
         ).isInstanceOf(WorkflowDefinitionNotFoundException.class);
 
         verify(repository, never()).save(any());
-        verify(repository, never()).save(any());
         verify(eventRepository, never()).append(any());
         verify(stepExecutionRepository, never())
                 .save(any(StepExecution.class));
     }
-
 
     @Test
     void shouldRetrieveWorkflowExecutionHistory() {
@@ -397,15 +394,17 @@ class WorkflowExecutionServiceTest {
                 );
     }
 
-
     private WorkflowDefinition createDefinition() {
         return new WorkflowDefinition(
                 "ORDER_PROCESSING",
                 1,
-                java.util.List.of(
+                List.of(
                         new WorkflowStepDefinition(
                                 "validate-order",
-                                StepType.SERVICE_TASK
+                                StepType.SERVICE_TASK,
+                                "ORDER_VALIDATION",
+                                null,
+                                null
                         ),
                         new WorkflowStepDefinition(
                                 "wait-for-payment",
@@ -414,5 +413,4 @@ class WorkflowExecutionServiceTest {
                 )
         );
     }
-
 }

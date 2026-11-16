@@ -125,7 +125,6 @@ class WorkflowExecutionControllerTest {
                         .value("order-456"));
     }
 
-
     @Test
     void shouldExecuteWorkflowLifecycleThroughApi() throws Exception {
         registerOrderProcessingDefinition();
@@ -176,7 +175,6 @@ class WorkflowExecutionControllerTest {
                 .andExpect(jsonPath("$.version").value(2));
     }
 
-
     @Test
     void shouldReturn404WhenWorkflowDoesNotExist() throws Exception {
         mockMvc.perform(get(
@@ -191,7 +189,6 @@ class WorkflowExecutionControllerTest {
                                 "Workflow execution not found"
                         )));
     }
-
 
     @Test
     void shouldReturn400ForInvalidWorkflowRequest() throws Exception {
@@ -210,7 +207,6 @@ class WorkflowExecutionControllerTest {
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.error").value("Bad Request"));
     }
-
 
     @Test
     void shouldReturn409ForInvalidWorkflowTransition() throws Exception {
@@ -260,7 +256,6 @@ class WorkflowExecutionControllerTest {
                 .andExpect(status().isNotFound());
     }
 
-
     @Test
     void shouldRetrieveWorkflowExecutionHistoryThroughApi() throws Exception {
         registerOrderProcessingDefinition();
@@ -305,7 +300,6 @@ class WorkflowExecutionControllerTest {
                 .andExpect(jsonPath("$[1].executionVersion").value(1));
     }
 
-
     private void registerOrderProcessingDefinition() {
         boolean exists = workflowDefinitionRepository
                 .findByTypeAndVersion("ORDER_PROCESSING", 1)
@@ -319,7 +313,10 @@ class WorkflowExecutionControllerTest {
                             List.of(
                                     new WorkflowStepDefinition(
                                             "validate-order",
-                                            StepType.SERVICE_TASK
+                                            StepType.SERVICE_TASK,
+                                            "ORDER_VALIDATION",
+                                            null,
+                                            null
                                     ),
                                     new WorkflowStepDefinition(
                                             "wait-for-payment",
@@ -455,5 +452,4 @@ class WorkflowExecutionControllerTest {
                 .andExpect(jsonPath("$[1].newStatus").value("CANCELLED"))
                 .andExpect(jsonPath("$[1].executionVersion").value(1));
     }
-
 }

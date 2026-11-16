@@ -1,10 +1,14 @@
 
 package com.flowcore.persistence;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flowcore.application.PersistedStepExecution;
 import com.flowcore.application.StepExecutionRepository;
 import com.flowcore.domain.StepExecution;
 import com.flowcore.domain.StepExecutionStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -13,6 +17,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -21,9 +26,20 @@ public class PostgresStepExecutionRepository
         implements StepExecutionRepository {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
 
-    public PostgresStepExecutionRepository(JdbcTemplate jdbcTemplate) {
+    @Autowired
+    public PostgresStepExecutionRepository(
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper
+    ) {
         this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = objectMapper;
+    }
+
+    // Retained for tests or existing direct construction.
+    public PostgresStepExecutionRepository(JdbcTemplate jdbcTemplate) {
+        this(jdbcTemplate, new ObjectMapper());
     }
 
     @Override
@@ -38,10 +54,11 @@ public class PostgresStepExecutionRepository
                     next_retry_at,
                     timeout_at,
                     last_error,
+                    output_payload,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?)
                 """;
 
         jdbcTemplate.update(
@@ -54,6 +71,7 @@ public class PostgresStepExecutionRepository
                 toTimestamp(step.getNextRetryAt()),
                 toTimestamp(step.getTimeoutAt()),
                 step.getLastError(),
+                serializePayload(step.getOutputPayload()),
                 toTimestamp(step.getCreatedAt()),
                 toTimestamp(step.getUpdatedAt())
         );
@@ -83,11 +101,11 @@ public class PostgresStepExecutionRepository
     @Override
     public List<PersistedStepExecution> findByWorkflowId(UUID workflowId) {
         String sql = """
-            SELECT *
-            FROM workflow_step_executions
-            WHERE workflow_id = ?
-            ORDER BY created_at ASC, step_execution_id ASC
-            """;
+                SELECT *
+                FROM workflow_step_executions
+                WHERE workflow_id = ?
+                ORDER BY created_at ASC, step_execution_id ASC
+                """;
 
         return jdbcTemplate.query(
                 sql,
@@ -109,6 +127,7 @@ public class PostgresStepExecutionRepository
                     next_retry_at = ?,
                     timeout_at = ?,
                     last_error = ?,
+                    output_payload = ?::jsonb,
                     updated_at = ?,
                     version = version + 1
                 WHERE step_execution_id = ?
@@ -122,6 +141,7 @@ public class PostgresStepExecutionRepository
                 toTimestamp(step.getNextRetryAt()),
                 toTimestamp(step.getTimeoutAt()),
                 step.getLastError(),
+                serializePayload(step.getOutputPayload()),
                 toTimestamp(step.getUpdatedAt()),
                 step.getStepExecutionId(),
                 persisted.version()
@@ -140,6 +160,31 @@ public class PostgresStepExecutionRepository
         );
     }
 
+    private String serializePayload(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException(
+                    "Failed to serialize step output payload",
+                    exception
+            );
+        }
+    }
+
+    private Map<String, Object> deserializePayload(String payload) {
+        try {
+            return objectMapper.readValue(
+                    payload,
+                    new TypeReference<Map<String, Object>>() {}
+            );
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException(
+                    "Failed to deserialize step output payload",
+                    exception
+            );
+        }
+    }
+
     private Timestamp toTimestamp(Instant instant) {
         return instant == null ? null : Timestamp.from(instant);
     }
@@ -155,6 +200,7 @@ public class PostgresStepExecutionRepository
                         toInstant(rs.getTimestamp("next_retry_at")),
                         toInstant(rs.getTimestamp("timeout_at")),
                         rs.getString("last_error"),
+                        deserializePayload(rs.getString("output_payload")),
                         toInstant(rs.getTimestamp("created_at")),
                         toInstant(rs.getTimestamp("updated_at"))
                 );

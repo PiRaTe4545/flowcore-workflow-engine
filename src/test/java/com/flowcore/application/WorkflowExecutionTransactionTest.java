@@ -85,7 +85,10 @@ class WorkflowExecutionTransactionTest {
                             java.util.List.of(
                                     new com.flowcore.definition.model.WorkflowStepDefinition(
                                             "validate-order",
-                                            com.flowcore.definition.model.StepType.SERVICE_TASK
+                                            com.flowcore.definition.model.StepType.SERVICE_TASK,
+                                            "ORDER_VALIDATION",
+                                            null,
+                                            null
                                     ),
                                     new com.flowcore.definition.model.WorkflowStepDefinition(
                                             "wait-for-payment",
@@ -547,6 +550,7 @@ class WorkflowExecutionTransactionTest {
                                     new WorkflowStepDefinition(
                                             "retryable-step",
                                             StepType.SERVICE_TASK,
+                                            "ORDER_VALIDATION",
                                             new RetryPolicy(
                                                     2,
                                                     Duration.ofSeconds(5),
