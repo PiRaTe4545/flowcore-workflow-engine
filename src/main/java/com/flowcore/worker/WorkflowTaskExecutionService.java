@@ -8,6 +8,7 @@ import com.flowcore.domain.WorkflowExecution;
 import com.flowcore.engine.StepExecutionEngine;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -15,12 +16,17 @@ import java.util.UUID;
 @Service
 public class WorkflowTaskExecutionService {
 
+    private static final Duration LEASE_DURATION =
+            Duration.ofMinutes(1);
+
     private final StepExecutionEngine stepExecutionEngine;
     private final WorkflowExecutionService workflowExecutionService;
     private final WorkflowDefinitionRepository workflowDefinitionRepository;
     private final StepExecutionRepository stepExecutionRepository;
     private final WorkflowTaskContextBuilder contextBuilder;
     private final WorkflowTaskWorkerRegistry workerRegistry;
+
+    private final String workerId;
 
     public WorkflowTaskExecutionService(
             StepExecutionEngine stepExecutionEngine,
@@ -30,30 +36,43 @@ public class WorkflowTaskExecutionService {
             WorkflowTaskContextBuilder contextBuilder,
             WorkflowTaskWorkerRegistry workerRegistry
     ) {
-        this.stepExecutionEngine = Objects.requireNonNull(stepExecutionEngine);
+        this.stepExecutionEngine =
+                Objects.requireNonNull(stepExecutionEngine);
         this.workflowExecutionService =
                 Objects.requireNonNull(workflowExecutionService);
         this.workflowDefinitionRepository =
                 Objects.requireNonNull(workflowDefinitionRepository);
         this.stepExecutionRepository =
                 Objects.requireNonNull(stepExecutionRepository);
-        this.contextBuilder = Objects.requireNonNull(contextBuilder);
-        this.workerRegistry = Objects.requireNonNull(workerRegistry);
+        this.contextBuilder =
+                Objects.requireNonNull(contextBuilder);
+        this.workerRegistry =
+                Objects.requireNonNull(workerRegistry);
+
+        this.workerId = UUID.randomUUID().toString();
     }
 
     public boolean executeNextTask(UUID workflowId) {
         Objects.requireNonNull(workflowId, "workflowId cannot be null");
 
         var claimedStepOptional =
-                stepExecutionEngine.claimNextServiceTask(workflowId);
+                stepExecutionEngine.claimNextServiceTask(
+                        workflowId,
+                        workerId,
+                        LEASE_DURATION
+                );
 
         if (claimedStepOptional.isEmpty()) {
             return false;
         }
 
         PersistedStepExecution claimedStep = claimedStepOptional.get();
+
         UUID stepExecutionId =
                 claimedStep.stepExecution().getStepExecutionId();
+
+        long leaseVersion =
+                claimedStep.stepExecution().getLeaseVersion();
 
         WorkflowTaskResult result;
 
@@ -61,7 +80,8 @@ public class WorkflowTaskExecutionService {
             PersistedWorkflowExecution persistedWorkflow =
                     workflowExecutionService.getById(workflowId);
 
-            WorkflowExecution workflow = persistedWorkflow.workflowExecution();
+            WorkflowExecution workflow =
+                    persistedWorkflow.workflowExecution();
 
             WorkflowDefinition definition =
                     workflowDefinitionRepository.findByTypeAndVersion(
@@ -103,21 +123,31 @@ public class WorkflowTaskExecutionService {
             );
 
         } catch (RuntimeException exception) {
+
+            String error = exception.getMessage() == null
+                    ? exception.getClass().getSimpleName()
+                    : exception.getMessage();
+
             stepExecutionEngine.handleStepFailure(
                     workflowId,
                     stepExecutionId,
-                    exception.getMessage() == null
-                            ? exception.getClass().getSimpleName()
-                            : exception.getMessage()
+                    error,
+                    workerId,
+                    leaseVersion
             );
+
             return true;
         }
 
         // Keep success handling outside the worker exception handler.
+        // A persistence or fencing failure must not be treated as
+        // another worker execution failure.
         stepExecutionEngine.handleStepSuccess(
                 workflowId,
                 stepExecutionId,
-                result.outputPayload()
+                result.outputPayload(),
+                workerId,
+                leaseVersion
         );
 
         return true;

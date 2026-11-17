@@ -10,16 +10,21 @@ import com.flowcore.domain.WorkflowExecution;
 import com.flowcore.engine.StepExecutionEngine;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class WorkflowTaskExecutionServiceTest {
+
+    private static final Duration LEASE_DURATION =
+            Duration.ofMinutes(1);
 
     @Test
     void shouldReturnFalseWhenNoStepIsAvailable() {
@@ -48,14 +53,22 @@ class WorkflowTaskExecutionServiceTest {
 
         UUID workflowId = UUID.randomUUID();
 
-        when(stepExecutionEngine.claimNextServiceTask(workflowId))
-                .thenReturn(Optional.empty());
+        when(stepExecutionEngine.claimNextServiceTask(
+                eq(workflowId),
+                anyString(),
+                eq(LEASE_DURATION)
+        )).thenReturn(Optional.empty());
 
         boolean executed = service.executeNextTask(workflowId);
 
         assertFalse(executed);
 
-        verify(stepExecutionEngine).claimNextServiceTask(workflowId);
+        verify(stepExecutionEngine).claimNextServiceTask(
+                eq(workflowId),
+                anyString(),
+                eq(LEASE_DURATION)
+        );
+
         verifyNoInteractions(
                 workflowExecutionService,
                 workflowDefinitionRepository,
@@ -64,7 +77,6 @@ class WorkflowTaskExecutionServiceTest {
                 workerRegistry
         );
     }
-
 
     @Test
     void shouldExecuteWorkerAndPersistSuccessfulOutput() {
@@ -95,13 +107,16 @@ class WorkflowTaskExecutionServiceTest {
         UUID stepExecutionId = UUID.randomUUID();
 
         StepExecution stepExecution = mock(StepExecution.class);
+
         when(stepExecution.getStepExecutionId()).thenReturn(stepExecutionId);
         when(stepExecution.getStepName()).thenReturn("validate-order");
+        when(stepExecution.getLeaseVersion()).thenReturn(1L);
 
         PersistedStepExecution claimedStep =
                 new PersistedStepExecution(stepExecution, 1L);
 
         WorkflowExecution workflow = mock(WorkflowExecution.class);
+
         when(workflow.getWorkflowType()).thenReturn("ORDER_PROCESSING");
         when(workflow.getDefinitionVersion()).thenReturn(1);
 
@@ -135,15 +150,22 @@ class WorkflowTaskExecutionServiceTest {
 
         WorkflowTaskWorker worker = mock(WorkflowTaskWorker.class);
 
-        when(stepExecutionEngine.claimNextServiceTask(workflowId))
-                .thenReturn(Optional.of(claimedStep));
+        when(stepExecutionEngine.claimNextServiceTask(
+                eq(workflowId),
+                anyString(),
+                eq(LEASE_DURATION)
+        )).thenReturn(Optional.of(claimedStep));
+
         when(workflowExecutionService.getById(workflowId))
                 .thenReturn(persistedWorkflow);
+
         when(workflowDefinitionRepository.findByTypeAndVersion(
                 "ORDER_PROCESSING", 1))
                 .thenReturn(Optional.of(definition));
+
         when(stepExecutionRepository.findByWorkflowId(workflowId))
                 .thenReturn(List.of(claimedStep));
+
         when(contextBuilder.build(
                 workflow,
                 stepDefinition,
@@ -151,8 +173,10 @@ class WorkflowTaskExecutionServiceTest {
                 List.of(claimedStep),
                 stepExecutionId
         )).thenReturn(context);
+
         when(workerRegistry.getWorker("ORDER_VALIDATION"))
                 .thenReturn(worker);
+
         when(worker.execute(context))
                 .thenReturn(WorkflowTaskResult.success(output));
 
@@ -160,16 +184,30 @@ class WorkflowTaskExecutionServiceTest {
 
         assertTrue(executed);
 
-        verify(worker).execute(context);
-        verify(stepExecutionEngine).handleStepSuccess(
-                workflowId,
-                stepExecutionId,
-                output
+        verify(stepExecutionEngine).claimNextServiceTask(
+                eq(workflowId),
+                anyString(),
+                eq(LEASE_DURATION)
         );
-        verify(stepExecutionEngine, never())
-                .handleStepFailure(any(), any(), anyString());
-    }
 
+        verify(worker).execute(context);
+
+        verify(stepExecutionEngine).handleStepSuccess(
+                eq(workflowId),
+                eq(stepExecutionId),
+                eq(output),
+                anyString(),
+                eq(1L)
+        );
+
+        verify(stepExecutionEngine, never()).handleStepFailure(
+                any(),
+                any(),
+                anyString(),
+                anyString(),
+                anyLong()
+        );
+    }
 
     @Test
     void shouldDelegateWorkerFailureToStepExecutionEngine() {
@@ -200,13 +238,16 @@ class WorkflowTaskExecutionServiceTest {
         UUID stepExecutionId = UUID.randomUUID();
 
         StepExecution stepExecution = mock(StepExecution.class);
+
         when(stepExecution.getStepExecutionId()).thenReturn(stepExecutionId);
         when(stepExecution.getStepName()).thenReturn("validate-order");
+        when(stepExecution.getLeaseVersion()).thenReturn(1L);
 
         PersistedStepExecution claimedStep =
                 new PersistedStepExecution(stepExecution, 1L);
 
         WorkflowExecution workflow = mock(WorkflowExecution.class);
+
         when(workflow.getWorkflowType()).thenReturn("ORDER_PROCESSING");
         when(workflow.getDefinitionVersion()).thenReturn(1);
 
@@ -237,15 +278,22 @@ class WorkflowTaskExecutionServiceTest {
 
         WorkflowTaskWorker worker = mock(WorkflowTaskWorker.class);
 
-        when(stepExecutionEngine.claimNextServiceTask(workflowId))
-                .thenReturn(Optional.of(claimedStep));
+        when(stepExecutionEngine.claimNextServiceTask(
+                eq(workflowId),
+                anyString(),
+                eq(LEASE_DURATION)
+        )).thenReturn(Optional.of(claimedStep));
+
         when(workflowExecutionService.getById(workflowId))
                 .thenReturn(persistedWorkflow);
+
         when(workflowDefinitionRepository.findByTypeAndVersion(
                 "ORDER_PROCESSING", 1))
                 .thenReturn(Optional.of(definition));
+
         when(stepExecutionRepository.findByWorkflowId(workflowId))
                 .thenReturn(List.of(claimedStep));
+
         when(contextBuilder.build(
                 workflow,
                 stepDefinition,
@@ -253,24 +301,33 @@ class WorkflowTaskExecutionServiceTest {
                 List.of(claimedStep),
                 stepExecutionId
         )).thenReturn(context);
+
         when(workerRegistry.getWorker("ORDER_VALIDATION"))
                 .thenReturn(worker);
+
         when(worker.execute(context))
-                .thenThrow(new IllegalStateException("Order validation failed"));
+                .thenThrow(new IllegalStateException(
+                        "Order validation failed"
+                ));
 
         boolean executed = service.executeNextTask(workflowId);
 
         assertTrue(executed);
 
         verify(stepExecutionEngine).handleStepFailure(
-                workflowId,
-                stepExecutionId,
-                "Order validation failed"
+                eq(workflowId),
+                eq(stepExecutionId),
+                eq("Order validation failed"),
+                anyString(),
+                eq(1L)
         );
 
-        verify(stepExecutionEngine, never())
-                .handleStepSuccess(any(), any(), anyMap());
+        verify(stepExecutionEngine, never()).handleStepSuccess(
+                any(),
+                any(),
+                anyMap(),
+                anyString(),
+                anyLong()
+        );
     }
-
-
 }

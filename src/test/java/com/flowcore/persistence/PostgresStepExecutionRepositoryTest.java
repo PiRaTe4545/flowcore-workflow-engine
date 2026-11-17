@@ -319,4 +319,523 @@ class PostgresStepExecutionRepositoryTest {
 
         assertThat(results).isEmpty();
     }
+
+    @Test
+    void shouldPersistAndUpdateLeaseDetails() {
+        StepExecution step = createStepExecution();
+
+        step.start(null);
+
+        Instant initialLeaseExpiry = Instant.now().plusSeconds(60);
+        step.acquireLease("worker-1", initialLeaseExpiry);
+
+        stepRepository.save(step);
+
+        PersistedStepExecution persisted = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persisted.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(persisted.stepExecution().getLeaseExpiresAt())
+                .isEqualTo(initialLeaseExpiry);
+        assertThat(persisted.stepExecution().getLeaseVersion())
+                .isEqualTo(1);
+
+        Instant renewedLeaseExpiry = Instant.now().plusSeconds(120);
+
+        persisted.stepExecution().renewLease(
+                "worker-1",
+                1,
+                renewedLeaseExpiry
+        );
+
+        stepRepository.update(persisted);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(retrieved.stepExecution().getLeaseExpiresAt())
+                .isEqualTo(renewedLeaseExpiry);
+        assertThat(retrieved.stepExecution().getLeaseVersion())
+                .isEqualTo(1);
+        assertThat(retrieved.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldAtomicallyClaimPendingStep() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant timeoutAt = now.plusSeconds(300);
+        Instant leaseExpiresAt = now.plusSeconds(60);
+
+        Optional<PersistedStepExecution> result = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                timeoutAt,
+                leaseExpiresAt,
+                now
+        );
+
+        assertThat(result).isPresent();
+
+        PersistedStepExecution claimed = result.orElseThrow();
+        StepExecution claimedStep = claimed.stepExecution();
+
+        assertThat(claimedStep.getStatus().name()).isEqualTo("RUNNING");
+        assertThat(claimedStep.getAttemptCount()).isEqualTo(1);
+        assertThat(claimedStep.getLeaseOwner()).isEqualTo("worker-1");
+        assertThat(claimedStep.getLeaseExpiresAt()).isEqualTo(leaseExpiresAt);
+        assertThat(claimedStep.getLeaseVersion()).isEqualTo(1);
+        assertThat(claimed.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldNotClaimStepWithActiveLease() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+
+        Optional<PersistedStepExecution> firstClaim =
+                stepRepository.claim(
+                        step.getStepExecutionId(),
+                        "worker-1",
+                        now.plusSeconds(300),
+                        now.plusSeconds(60),
+                        now
+                );
+
+        assertThat(firstClaim).isPresent();
+
+        Optional<PersistedStepExecution> secondClaim =
+                stepRepository.claim(
+                        step.getStepExecutionId(),
+                        "worker-2",
+                        now.plusSeconds(300),
+                        now.plusSeconds(120),
+                        now
+                );
+
+        assertThat(secondClaim).isEmpty();
+
+        PersistedStepExecution persisted = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persisted.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(persisted.stepExecution().getLeaseVersion()).isEqualTo(1);
+        assertThat(persisted.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldReclaimStepAfterLeaseExpires() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant firstNow = Instant.now();
+        Instant originalTimeoutAt = firstNow.plusSeconds(300);
+        stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                originalTimeoutAt,
+                firstNow.plusSeconds(30),
+                firstNow
+        ).orElseThrow();
+
+        Instant recoveryNow = firstNow.plusSeconds(60);
+        Instant newLeaseExpiry = recoveryNow.plusSeconds(60);
+
+        Optional<PersistedStepExecution> recovered =
+                stepRepository.claim(
+                        step.getStepExecutionId(),
+                        "worker-2",
+                        recoveryNow.plusSeconds(300),
+                        newLeaseExpiry,
+                        recoveryNow
+                );
+
+        assertThat(recovered).isPresent();
+
+        PersistedStepExecution claimed = recovered.orElseThrow();
+        assertThat(claimed.stepExecution().getTimeoutAt())
+                .isEqualTo(originalTimeoutAt);
+
+        assertThat(claimed.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-2");
+        assertThat(claimed.stepExecution().getLeaseExpiresAt())
+                .isEqualTo(newLeaseExpiry);
+        assertThat(claimed.stepExecution().getLeaseVersion()).isEqualTo(2);
+        assertThat(claimed.stepExecution().getAttemptCount()).isEqualTo(2);
+        assertThat(claimed.version()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldNotClaimStepBeforeRetryTime() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+
+        PersistedStepExecution persisted = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        persisted.stepExecution().start(now.plusSeconds(300));
+        persisted.stepExecution().scheduleRetry(
+                now.plusSeconds(120),
+                "Temporary failure"
+        );
+
+        stepRepository.update(persisted);
+
+        Optional<PersistedStepExecution> earlyClaim = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                now.plusSeconds(300),
+                now.plusSeconds(180),
+                now.plusSeconds(60)
+        );
+
+        assertThat(earlyClaim).isEmpty();
+
+        Optional<PersistedStepExecution> eligibleClaim = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                now.plusSeconds(300),
+                now.plusSeconds(180),
+                now.plusSeconds(120)
+        );
+
+        assertThat(eligibleClaim).isPresent();
+        assertThat(eligibleClaim.orElseThrow().stepExecution().getAttemptCount())
+                .isEqualTo(2);
+    }
+
+    @Test
+    void shouldAllowOnlyOneWorkerToClaimStepConcurrently()
+            throws Exception {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+
+        java.util.concurrent.ExecutorService executor =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+
+        try {
+            java.util.concurrent.CountDownLatch startGate =
+                    new java.util.concurrent.CountDownLatch(1);
+
+            java.util.concurrent.Callable<Optional<PersistedStepExecution>> claim =
+                    () -> {
+                        startGate.await();
+
+                        return stepRepository.claim(
+                                step.getStepExecutionId(),
+                                Thread.currentThread().getName(),
+                                now.plusSeconds(300),
+                                now.plusSeconds(60),
+                                now
+                        );
+                    };
+
+            var first = executor.submit(claim);
+            var second = executor.submit(claim);
+
+            startGate.countDown();
+
+            Optional<PersistedStepExecution> firstResult = first.get();
+            Optional<PersistedStepExecution> secondResult = second.get();
+
+            assertThat(
+                    (firstResult.isPresent() ? 1 : 0)
+                            + (secondResult.isPresent() ? 1 : 0)
+            ).isEqualTo(1);
+
+            PersistedStepExecution persisted = stepRepository
+                    .findById(step.getStepExecutionId())
+                    .orElseThrow();
+
+            assertThat(persisted.stepExecution().getLeaseVersion()).isEqualTo(1);
+            assertThat(persisted.stepExecution().getAttemptCount()).isEqualTo(1);
+            assertThat(persisted.version()).isEqualTo(1);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shouldAllowWorkerToUpdateStepWithValidLease() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant leaseExpiresAt = now.plusSeconds(60);
+
+        PersistedStepExecution claimed = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                null,
+                leaseExpiresAt,
+                now
+        ).orElseThrow();
+
+        claimed.stepExecution().complete(
+                Map.of("paymentStatus", "APPROVED")
+        );
+
+        PersistedStepExecution updated = stepRepository.updateWithLease(
+                claimed,
+                "worker-1",
+                1,
+                now.plusSeconds(1)
+        );
+
+        assertThat(updated.version()).isEqualTo(2);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getStatus().name())
+                .isEqualTo("COMPLETED");
+        assertThat(retrieved.stepExecution().getOutputPayload())
+                .containsEntry("paymentStatus", "APPROVED");
+        assertThat(retrieved.stepExecution().getLeaseOwner()).isNull();
+        assertThat(retrieved.version()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldRejectUpdateFromDifferentWorker() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant leaseExpiresAt = now.plusSeconds(60);
+
+        PersistedStepExecution claimed = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                null,
+                leaseExpiresAt,
+                now
+        ).orElseThrow();
+
+        claimed.stepExecution().complete(Map.of("result", "SUCCESS"));
+
+        assertThatThrownBy(
+                () -> stepRepository.updateWithLease(
+                        claimed,
+                        "worker-2",
+                        1,
+                        now.plusSeconds(1)
+                )
+        ).isInstanceOf(OptimisticLockingFailureException.class);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getStatus().name())
+                .isEqualTo("RUNNING");
+        assertThat(retrieved.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(retrieved.stepExecution().getLeaseVersion()).isEqualTo(1);
+        assertThat(retrieved.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldRejectUpdateAfterLeaseExpires() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant leaseExpiresAt = now.plusSeconds(30);
+
+        PersistedStepExecution claimed = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                null,
+                leaseExpiresAt,
+                now
+        ).orElseThrow();
+
+        claimed.stepExecution().complete(Map.of("result", "SUCCESS"));
+
+        Instant afterLeaseExpiry = leaseExpiresAt.plusSeconds(1);
+
+        assertThatThrownBy(
+                () -> stepRepository.updateWithLease(
+                        claimed,
+                        "worker-1",
+                        1,
+                        afterLeaseExpiry
+                )
+        ).isInstanceOf(OptimisticLockingFailureException.class);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getStatus().name())
+                .isEqualTo("RUNNING");
+        assertThat(retrieved.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(retrieved.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldRejectStaleWorkerAfterLeaseReclamation() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant firstNow = Instant.now();
+        Instant firstLeaseExpiry = firstNow.plusSeconds(30);
+
+        PersistedStepExecution firstClaim = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                null,
+                firstLeaseExpiry,
+                firstNow
+        ).orElseThrow();
+
+        // Worker 1's lease expires. Worker 2 reclaims the step.
+        Instant recoveryNow = firstLeaseExpiry.plusSeconds(1);
+        Instant secondLeaseExpiry = recoveryNow.plusSeconds(60);
+
+        PersistedStepExecution secondClaim = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-2",
+                null,
+                secondLeaseExpiry,
+                recoveryNow
+        ).orElseThrow();
+
+        assertThat(secondClaim.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-2");
+        assertThat(secondClaim.stepExecution().getLeaseVersion()).isEqualTo(2);
+        assertThat(secondClaim.version()).isEqualTo(2);
+
+        // The old worker attempts to complete using its original lease.
+        firstClaim.stepExecution().complete(
+                Map.of("result", "STALE_RESULT")
+        );
+
+        assertThatThrownBy(
+                () -> stepRepository.updateWithLease(
+                        firstClaim,
+                        "worker-1",
+                        1,
+                        recoveryNow.plusSeconds(1)
+                )
+        ).isInstanceOf(OptimisticLockingFailureException.class);
+
+        PersistedStepExecution retrieved = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(retrieved.stepExecution().getStatus().name())
+                .isEqualTo("RUNNING");
+        assertThat(retrieved.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-2");
+        assertThat(retrieved.stepExecution().getLeaseVersion()).isEqualTo(2);
+        assertThat(retrieved.version()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldNotReclaimStepAfterTaskTimeout() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant firstNow = Instant.now();
+        Instant taskTimeout = firstNow.plusSeconds(30);
+        Instant leaseExpiry = firstNow.plusSeconds(10);
+
+        stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                taskTimeout,
+                leaseExpiry,
+                firstNow
+        ).orElseThrow();
+
+        Instant recoveryNow = taskTimeout.plusSeconds(1);
+
+        Optional<PersistedStepExecution> recovered =
+                stepRepository.claim(
+                        step.getStepExecutionId(),
+                        "worker-2",
+                        recoveryNow.plusSeconds(300),
+                        recoveryNow.plusSeconds(60),
+                        recoveryNow
+                );
+
+        assertThat(recovered).isEmpty();
+
+        PersistedStepExecution persisted = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persisted.stepExecution().getStatus().name())
+                .isEqualTo("RUNNING");
+        assertThat(persisted.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(persisted.stepExecution().getTimeoutAt())
+                .isEqualTo(taskTimeout);
+        assertThat(persisted.stepExecution().getLeaseVersion()).isEqualTo(1);
+        assertThat(persisted.version()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldRejectUpdateAfterTaskTimeout() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant taskTimeout = now.plusSeconds(30);
+        Instant leaseExpiry = now.plusSeconds(60);
+
+        PersistedStepExecution claimed = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                taskTimeout,
+                leaseExpiry,
+                now
+        ).orElseThrow();
+
+        claimed.stepExecution().complete(
+                Map.of("result", "SUCCESS")
+        );
+
+        Instant afterTaskTimeout = taskTimeout.plusSeconds(1);
+
+        assertThatThrownBy(
+                () -> stepRepository.updateWithLease(
+                        claimed,
+                        "worker-1",
+                        1,
+                        afterTaskTimeout
+                )
+        ).isInstanceOf(OptimisticLockingFailureException.class);
+
+        PersistedStepExecution persisted = stepRepository
+                .findById(step.getStepExecutionId())
+                .orElseThrow();
+
+        assertThat(persisted.stepExecution().getStatus().name())
+                .isEqualTo("RUNNING");
+        assertThat(persisted.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(persisted.stepExecution().getTimeoutAt())
+                .isEqualTo(taskTimeout);
+        assertThat(persisted.version()).isEqualTo(1);
+    }
 }

@@ -1,7 +1,9 @@
+
 package com.flowcore.application;
 
 import com.flowcore.domain.StepExecution;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -16,5 +18,20 @@ public interface StepExecutionRepository {
 
     PersistedStepExecution update(
             PersistedStepExecution persistedStepExecution
+    );
+
+    Optional<PersistedStepExecution> claim(
+            UUID stepExecutionId,
+            String workerId,
+            Instant timeoutAt,
+            Instant leaseExpiresAt,
+            Instant now
+    );
+
+    PersistedStepExecution updateWithLease(
+            PersistedStepExecution persistedStepExecution,
+            String workerId,
+            long expectedLeaseVersion,
+            Instant now
     );
 }

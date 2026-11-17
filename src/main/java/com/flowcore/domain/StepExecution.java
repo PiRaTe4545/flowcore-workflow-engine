@@ -20,6 +20,11 @@ public class StepExecution {
     private Instant timeoutAt;
     private String lastError;
     private Map<String, Object> outputPayload;
+
+    private String leaseOwner;
+    private Instant leaseExpiresAt;
+    private long leaseVersion;
+
     private final Instant createdAt;
     private Instant updatedAt;
 
@@ -33,6 +38,9 @@ public class StepExecution {
             Instant timeoutAt,
             String lastError,
             Map<String, Object> outputPayload,
+            String leaseOwner,
+            Instant leaseExpiresAt,
+            long leaseVersion,
             Instant createdAt,
             Instant updatedAt
     ) {
@@ -48,7 +56,15 @@ public class StepExecution {
         }
 
         if (attemptCount < 0) {
-            throw new IllegalArgumentException("attemptCount cannot be negative");
+            throw new IllegalArgumentException(
+                    "attemptCount cannot be negative"
+            );
+        }
+
+        if (leaseVersion < 0) {
+            throw new IllegalArgumentException(
+                    "leaseVersion cannot be negative"
+            );
         }
 
         if (updatedAt.isBefore(createdAt)) {
@@ -57,11 +73,20 @@ public class StepExecution {
             );
         }
 
+        if ((leaseOwner == null) != (leaseExpiresAt == null)) {
+            throw new IllegalArgumentException(
+                    "leaseOwner and leaseExpiresAt must both be null or non-null"
+            );
+        }
+
         this.attemptCount = attemptCount;
         this.nextRetryAt = nextRetryAt;
         this.timeoutAt = timeoutAt;
         this.lastError = lastError;
         this.outputPayload = immutablePayload(outputPayload);
+        this.leaseOwner = leaseOwner;
+        this.leaseExpiresAt = leaseExpiresAt;
+        this.leaseVersion = leaseVersion;
     }
 
     public static StepExecution create(UUID workflowId, String stepName) {
@@ -77,6 +102,9 @@ public class StepExecution {
                 null,
                 null,
                 Map.of(),
+                null,
+                null,
+                0,
                 now,
                 now
         );
@@ -104,6 +132,9 @@ public class StepExecution {
                 timeoutAt,
                 lastError,
                 Map.of(),
+                null,
+                null,
+                0,
                 createdAt,
                 updatedAt
         );
@@ -122,6 +153,40 @@ public class StepExecution {
             Instant createdAt,
             Instant updatedAt
     ) {
+        return restore(
+                stepExecutionId,
+                workflowId,
+                stepName,
+                status,
+                attemptCount,
+                nextRetryAt,
+                timeoutAt,
+                lastError,
+                outputPayload,
+                null,
+                null,
+                0,
+                createdAt,
+                updatedAt
+        );
+    }
+
+    public static StepExecution restore(
+            UUID stepExecutionId,
+            UUID workflowId,
+            String stepName,
+            StepExecutionStatus status,
+            int attemptCount,
+            Instant nextRetryAt,
+            Instant timeoutAt,
+            String lastError,
+            Map<String, Object> outputPayload,
+            String leaseOwner,
+            Instant leaseExpiresAt,
+            long leaseVersion,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
         return new StepExecution(
                 stepExecutionId,
                 workflowId,
@@ -132,6 +197,9 @@ public class StepExecution {
                 timeoutAt,
                 lastError,
                 outputPayload,
+                leaseOwner,
+                leaseExpiresAt,
+                leaseVersion,
                 createdAt,
                 updatedAt
         );
@@ -145,7 +213,108 @@ public class StepExecution {
         this.nextRetryAt = null;
         this.timeoutAt = timeoutAt;
         this.lastError = null;
+        clearLease();
         touch();
+    }
+
+    public void acquireLease(
+            String workerId,
+            Instant leaseExpiresAt
+    ) {
+        requireStatus(StepExecutionStatus.RUNNING);
+
+        Objects.requireNonNull(workerId, "workerId cannot be null");
+        Objects.requireNonNull(
+                leaseExpiresAt,
+                "leaseExpiresAt cannot be null"
+        );
+
+        if (workerId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "workerId cannot be blank"
+            );
+        }
+
+        if (!leaseExpiresAt.isAfter(Instant.now())) {
+            throw new IllegalArgumentException(
+                    "leaseExpiresAt must be in the future"
+            );
+        }
+
+        if (this.leaseOwner != null
+                && this.leaseExpiresAt.isAfter(Instant.now())) {
+            throw new IllegalStateException(
+                    "Step already has an active lease"
+            );
+        }
+
+        this.leaseOwner = workerId;
+        this.leaseExpiresAt = leaseExpiresAt;
+        this.leaseVersion++;
+        touch();
+    }
+
+    public void renewLease(
+            String workerId,
+            long expectedLeaseVersion,
+            Instant newLeaseExpiresAt
+    ) {
+        verifyLease(workerId, expectedLeaseVersion);
+
+        Objects.requireNonNull(
+                newLeaseExpiresAt,
+                "newLeaseExpiresAt cannot be null"
+        );
+
+        Instant now = Instant.now();
+
+        if (!leaseExpiresAt.isAfter(now)) {
+            throw new IllegalStateException(
+                    "Cannot renew an expired lease"
+            );
+        }
+
+        if (!newLeaseExpiresAt.isAfter(leaseExpiresAt)) {
+            throw new IllegalArgumentException(
+                    "New lease expiration must extend the existing lease"
+            );
+        }
+
+        this.leaseExpiresAt = newLeaseExpiresAt;
+        touch();
+    }
+
+    public void verifyLease(
+            String workerId,
+            long expectedLeaseVersion
+    ) {
+        Objects.requireNonNull(workerId, "workerId cannot be null");
+
+        if (workerId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "workerId cannot be blank"
+            );
+        }
+
+        if (status != StepExecutionStatus.RUNNING) {
+            throw new IllegalStateException(
+                    "Step is not running"
+            );
+        }
+
+        if (!workerId.equals(leaseOwner)
+                || expectedLeaseVersion != leaseVersion) {
+            throw new IllegalStateException(
+                    "Worker no longer owns this step execution"
+            );
+        }
+
+        if (leaseExpiresAt == null
+                || !leaseExpiresAt.isAfter(Instant.now())) {
+            throw new IllegalStateException(
+                    "Worker lease has expired"
+            );
+        }
     }
 
     public void scheduleRetry(Instant nextRetryAt, String error) {
@@ -155,6 +324,7 @@ public class StepExecution {
         this.nextRetryAt = Objects.requireNonNull(nextRetryAt);
         this.timeoutAt = null;
         this.lastError = requireError(error);
+        clearLease();
         touch();
     }
 
@@ -170,6 +340,7 @@ public class StepExecution {
         this.timeoutAt = null;
         this.nextRetryAt = null;
         this.lastError = null;
+        clearLease();
         touch();
     }
 
@@ -180,6 +351,7 @@ public class StepExecution {
         this.timeoutAt = null;
         this.nextRetryAt = null;
         this.lastError = requireError(error);
+        clearLease();
         touch();
     }
 
@@ -190,7 +362,13 @@ public class StepExecution {
         this.timeoutAt = null;
         this.nextRetryAt = null;
         this.lastError = requireError(error);
+        clearLease();
         touch();
+    }
+
+    private void clearLease() {
+        this.leaseOwner = null;
+        this.leaseExpiresAt = null;
     }
 
     private void requireStatus(StepExecutionStatus expected) {
@@ -205,13 +383,17 @@ public class StepExecution {
         if (error == null || error.isBlank()) {
             throw new IllegalArgumentException("error cannot be blank");
         }
+
         return error;
     }
 
     private Map<String, Object> immutablePayload(
             Map<String, Object> payload
     ) {
-        Objects.requireNonNull(payload, "outputPayload cannot be null");
+        Objects.requireNonNull(
+                payload,
+                "outputPayload cannot be null"
+        );
 
         return Collections.unmodifiableMap(
                 new LinkedHashMap<>(payload)
@@ -256,6 +438,18 @@ public class StepExecution {
 
     public Map<String, Object> getOutputPayload() {
         return outputPayload;
+    }
+
+    public String getLeaseOwner() {
+        return leaseOwner;
+    }
+
+    public Instant getLeaseExpiresAt() {
+        return leaseExpiresAt;
+    }
+
+    public long getLeaseVersion() {
+        return leaseVersion;
     }
 
     public Instant getCreatedAt() {

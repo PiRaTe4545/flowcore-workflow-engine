@@ -454,7 +454,9 @@ class WorkflowExecutionTransactionTest {
                 stepExecutionEngine.handleStepFailure(
                         workflowId,
                         claimed.stepExecution().getStepExecutionId(),
-                        "Permanent service failure"
+                        "Permanent service failure",
+                        claimed.stepExecution().getLeaseOwner(),
+                        claimed.stepExecution().getLeaseVersion()
                 )
         )
                 .isInstanceOf(IllegalStateException.class)
@@ -499,7 +501,9 @@ class WorkflowExecutionTransactionTest {
         var failedStep = stepExecutionEngine.handleStepFailure(
                 workflowId,
                 claimed.stepExecution().getStepExecutionId(),
-                "Permanent service failure"
+                "Permanent service failure",
+                claimed.stepExecution().getLeaseOwner(),
+                claimed.stepExecution().getLeaseVersion()
         );
 
         // Verify the step failure was persisted.
@@ -581,7 +585,9 @@ class WorkflowExecutionTransactionTest {
         var failedStep = stepExecutionEngine.handleStepFailure(
                 workflowId,
                 claimed.stepExecution().getStepExecutionId(),
-                "Temporary service failure"
+                "Temporary service failure",
+                claimed.stepExecution().getLeaseOwner(),
+                claimed.stepExecution().getLeaseVersion()
         );
 
         var persistedStep = stepExecutionRepository
@@ -630,7 +636,10 @@ class WorkflowExecutionTransactionTest {
         // Report successful completion.
         var completedStep = stepExecutionEngine.handleStepSuccess(
                 workflowId,
-                firstClaim.stepExecution().getStepExecutionId()
+                firstClaim.stepExecution().getStepExecutionId(),
+                Map.of(),
+                firstClaim.stepExecution().getLeaseOwner(),
+                firstClaim.stepExecution().getLeaseVersion()
         );
 
         assertThat(completedStep.stepExecution().getStatus())
@@ -680,7 +689,10 @@ class WorkflowExecutionTransactionTest {
 
         stepExecutionEngine.handleStepSuccess(
                 workflowId,
-                firstClaim.stepExecution().getStepExecutionId()
+                firstClaim.stepExecution().getStepExecutionId(),
+                Map.of(),
+                firstClaim.stepExecution().getLeaseOwner(),
+                firstClaim.stepExecution().getLeaseVersion()
         );
 
         // Claim and complete second step.
@@ -689,7 +701,10 @@ class WorkflowExecutionTransactionTest {
 
         stepExecutionEngine.handleStepSuccess(
                 workflowId,
-                secondClaim.stepExecution().getStepExecutionId()
+                secondClaim.stepExecution().getStepExecutionId(),
+                Map.of(),
+                secondClaim.stepExecution().getLeaseOwner(),
+                secondClaim.stepExecution().getLeaseVersion()
         );
 
         // No more steps should be claimable.

@@ -3,7 +3,9 @@ package com.flowcore.engine;
 
 import com.flowcore.application.*;
 import com.flowcore.definition.model.*;
-import com.flowcore.domain.*;
+import com.flowcore.domain.StepExecution;
+import com.flowcore.domain.StepExecutionStatus;
+import com.flowcore.domain.WorkflowExecution;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -57,6 +59,11 @@ class StepExecutionEngineTest {
         StepExecution first = StepExecution.create(workflowId, "validate-order");
         StepExecution second = StepExecution.create(workflowId, "wait-for-payment");
 
+        stubSuccessfulClaim(
+                new PersistedStepExecution(first, 0),
+                new PersistedStepExecution(second, 0)
+        );
+
         when(workflowRepository.findById(workflowId))
                 .thenReturn(Optional.of(new PersistedWorkflowExecution(workflow, 0)));
 
@@ -89,7 +96,20 @@ class StepExecutionEngineTest {
         assertThat(result.get().stepExecution().getAttemptCount())
                 .isEqualTo(1);
 
-        verify(stepExecutionRepository).update(any(PersistedStepExecution.class));
+        verify(stepExecutionRepository).claim(
+                eq(first.getStepExecutionId()),
+                anyString(),
+                isNull(),
+                any(Instant.class),
+                any(Instant.class)
+        );
+        verify(stepExecutionRepository).claim(
+                eq(first.getStepExecutionId()),
+                anyString(),
+                isNull(),
+                any(Instant.class),
+                any(Instant.class)
+        );
     }
 
     @Test
@@ -115,7 +135,10 @@ class StepExecutionEngineTest {
         assertThatThrownBy(() ->
                 engine.handleStepSuccess(
                         workflowId,
-                        step.getStepExecutionId()
+                        step.getStepExecutionId(),
+                        Map.of(),
+                        "worker-1",
+                        0L
                 )
         )
                 .isInstanceOf(IllegalArgumentException.class)
@@ -169,6 +192,11 @@ class StepExecutionEngineTest {
 
         StepExecution second = StepExecution.create(workflowId, "wait-for-payment");
 
+        stubSuccessfulClaim(
+                new PersistedStepExecution(first, 2),
+                new PersistedStepExecution(second, 0)
+        );
+
         when(workflowRepository.findById(workflowId))
                 .thenReturn(Optional.of(new PersistedWorkflowExecution(workflow, 0)));
 
@@ -209,6 +237,14 @@ class StepExecutionEngineTest {
         step.scheduleRetry(
                 Instant.now().minusSeconds(10),
                 "Temporary failure"
+        );
+
+        stubSuccessfulClaim(
+                new PersistedStepExecution(step, 2),
+                new PersistedStepExecution(
+                        StepExecution.create(workflowId, "wait-for-payment"),
+                        0
+                )
         );
 
         when(workflowRepository.findById(workflowId))
@@ -304,6 +340,14 @@ class StepExecutionEngineTest {
 
         StepExecution step = StepExecution.create(workflowId, "validate-order");
 
+        stubSuccessfulClaim(
+                new PersistedStepExecution(step, 0),
+                new PersistedStepExecution(
+                        StepExecution.create(workflowId, "wait-for-payment"),
+                        0
+                )
+        );
+
         when(workflowRepository.findById(workflowId))
                 .thenReturn(Optional.of(new PersistedWorkflowExecution(workflow, 0)));
 
@@ -343,6 +387,86 @@ class StepExecutionEngineTest {
                 .isAfterOrEqualTo(beforeClaim.plus(Duration.ofMinutes(2)))
                 .isBeforeOrEqualTo(afterClaim.plus(Duration.ofMinutes(2)));
     }
+
+
+    @Test
+    void shouldTimeOutExpiredRunningStepAndFailWorkflow() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+
+        Instant now = Instant.now();
+
+        step.start(now.minusSeconds(10));
+        step.acquireLease(
+                "worker-1",
+                now.plusSeconds(60)
+        );
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 1);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 0)
+                ));
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING", 1
+        )).thenReturn(Optional.of(definitionWithTwoSteps()));
+
+        when(stepExecutionRepository.findByWorkflowId(workflowId))
+                .thenReturn(List.of(
+                        persistedStep,
+                        new PersistedStepExecution(
+                                StepExecution.create(
+                                        workflowId,
+                                        "wait-for-payment"
+                                ),
+                                0
+                        )
+                ));
+
+        when(stepExecutionRepository.update(
+                any(PersistedStepExecution.class)
+        )).thenAnswer(invocation -> {
+            PersistedStepExecution updated = invocation.getArgument(0);
+            return new PersistedStepExecution(
+                    updated.stepExecution(),
+                    updated.version() + 1
+            );
+        });
+
+        Optional<PersistedStepExecution> result =
+                engine.claimNextStep(workflowId);
+
+        assertThat(result).isEmpty();
+
+        assertThat(step.getStatus())
+                .isEqualTo(StepExecutionStatus.TIMED_OUT);
+
+        assertThat(step.getLastError())
+                .isEqualTo("Step execution timed out");
+
+        assertThat(step.getLeaseOwner()).isNull();
+        assertThat(step.getLeaseExpiresAt()).isNull();
+
+        verify(stepExecutionRepository).update(persistedStep);
+
+        verify(stepExecutionRepository, never()).claim(
+                any(UUID.class),
+                anyString(),
+                nullable(Instant.class),
+                any(Instant.class),
+                any(Instant.class)
+        );
+
+        verify(workflowExecutionService).fail(workflowId);
+    }
+
 
     @Test
     void shouldNotClaimStepWhenWorkflowIsNotRunning() {
@@ -393,16 +517,26 @@ class StepExecutionEngineTest {
                         new PersistedStepExecution(second, 0)
                 ));
 
-        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
-                .thenThrow(new OptimisticLockingFailureException(
-                        "Concurrent step claim"
-                ));
+        when(stepExecutionRepository.claim(
+                any(UUID.class),
+                anyString(),
+                nullable(Instant.class),
+                any(Instant.class),
+                any(Instant.class)
+        )).thenThrow(new OptimisticLockingFailureException(
+                "Concurrent step claim"
+        ));
 
         assertThatThrownBy(() -> engine.claimNextStep(workflowId))
                 .isInstanceOf(OptimisticLockingFailureException.class);
 
-        verify(stepExecutionRepository)
-                .update(any(PersistedStepExecution.class));
+        verify(stepExecutionRepository).claim(
+                eq(first.getStepExecutionId()),
+                anyString(),
+                isNull(),
+                any(Instant.class),
+                any(Instant.class)
+        );
     }
 
     @Test
@@ -463,6 +597,11 @@ class StepExecutionEngineTest {
                 workflowId, "wait-for-payment"
         );
 
+        stubSuccessfulClaim(
+                new PersistedStepExecution(first, 2),
+                new PersistedStepExecution(second, 0)
+        );
+
         when(workflowRepository.findById(workflowId))
                 .thenReturn(Optional.of(
                         new PersistedWorkflowExecution(workflow, 0)
@@ -508,6 +647,13 @@ class StepExecutionEngineTest {
         );
         step.start(null);
 
+        String workerId = "worker-1";
+        step.acquireLease(
+                workerId,
+                Instant.now().plusSeconds(60)
+        );
+        long leaseVersion = step.getLeaseVersion();
+
         PersistedStepExecution persistedStep =
                 new PersistedStepExecution(step, 1);
 
@@ -519,31 +665,44 @@ class StepExecutionEngineTest {
         when(stepExecutionRepository.findById(step.getStepExecutionId()))
                 .thenReturn(Optional.of(persistedStep));
 
-        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
-                .thenAnswer(invocation -> {
-                    PersistedStepExecution persisted = invocation.getArgument(0);
-                    return new PersistedStepExecution(
-                            persisted.stepExecution(),
-                            persisted.version() + 1
-                    );
-                });
+        when(stepExecutionRepository.updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        )).thenAnswer(invocation -> {
+            PersistedStepExecution persisted = invocation.getArgument(0);
+            return new PersistedStepExecution(
+                    persisted.stepExecution(),
+                    persisted.version() + 1
+            );
+        });
 
         PersistedStepExecution result = engine.handleStepSuccess(
                 workflowId,
-                step.getStepExecutionId()
+                step.getStepExecutionId(),
+                Map.of(),
+                workerId,
+                leaseVersion
         );
 
         assertThat(result.stepExecution().getStatus())
                 .isEqualTo(StepExecutionStatus.COMPLETED);
 
         assertThat(result.stepExecution().getTimeoutAt()).isNull();
-
         assertThat(result.stepExecution().getNextRetryAt()).isNull();
 
-        verify(stepExecutionRepository).update(persistedStep);
+        verify(stepExecutionRepository).updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        );
+
+        verify(stepExecutionRepository, never())
+                .update(any(PersistedStepExecution.class));
 
         verifyNoInteractions(definitionRepository);
-
         verify(workflowExecutionService, never()).complete(workflowId);
     }
 
@@ -581,6 +740,12 @@ class StepExecutionEngineTest {
                 "validate-order"
         );
         step.start(null);
+        String workerId = "worker-1";
+        step.acquireLease(
+                workerId,
+                Instant.now().plusSeconds(60)
+        );
+        long leaseVersion = step.getLeaseVersion();
 
         PersistedStepExecution persistedStep =
                 new PersistedStepExecution(step, 1);
@@ -597,8 +762,12 @@ class StepExecutionEngineTest {
                 "ORDER_PROCESSING", 1
         )).thenReturn(Optional.of(definition));
 
-        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
-                .thenAnswer(invocation -> {
+        when(stepExecutionRepository.updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        )).thenAnswer(invocation -> {
                     PersistedStepExecution persisted = invocation.getArgument(0);
                     return new PersistedStepExecution(
                             persisted.stepExecution(),
@@ -611,7 +780,9 @@ class StepExecutionEngineTest {
         PersistedStepExecution result = engine.handleStepFailure(
                 workflowId,
                 step.getStepExecutionId(),
-                "Temporary service failure"
+                "Temporary service failure",
+                workerId,
+                leaseVersion
         );
 
         Instant afterFailure = Instant.now();
@@ -629,7 +800,12 @@ class StepExecutionEngineTest {
                 .isAfterOrEqualTo(beforeFailure.plusSeconds(5))
                 .isBeforeOrEqualTo(afterFailure.plusSeconds(5));
 
-        verify(stepExecutionRepository).update(persistedStep);
+        verify(stepExecutionRepository).updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        );
         verify(workflowExecutionService, never()).fail(workflowId);
     }
 
@@ -670,6 +846,13 @@ class StepExecutionEngineTest {
         // First attempt.
         step.start(null);
 
+        String workerId = "worker-1";
+        step.acquireLease(
+                workerId,
+                Instant.now().plusSeconds(60)
+        );
+        long leaseVersion = step.getLeaseVersion();
+
         // Simulate a retry.
         step.scheduleRetry(
                 Instant.now().minusSeconds(10),
@@ -692,8 +875,12 @@ class StepExecutionEngineTest {
                 "ORDER_PROCESSING", 1
         )).thenReturn(Optional.of(definition));
 
-        when(stepExecutionRepository.update(any(PersistedStepExecution.class)))
-                .thenAnswer(invocation -> {
+        when(stepExecutionRepository.updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        )).thenAnswer(invocation -> {
                     PersistedStepExecution persisted = invocation.getArgument(0);
                     return new PersistedStepExecution(
                             persisted.stepExecution(),
@@ -704,7 +891,9 @@ class StepExecutionEngineTest {
         PersistedStepExecution result = engine.handleStepFailure(
                 workflowId,
                 step.getStepExecutionId(),
-                "Second attempt failed"
+                "Second attempt failed",
+                workerId,
+                leaseVersion
         );
 
         assertThat(result.stepExecution().getStatus())
@@ -719,10 +908,58 @@ class StepExecutionEngineTest {
         assertThat(result.stepExecution().getNextRetryAt())
                 .isNull();
 
-        verify(stepExecutionRepository).update(persistedStep);
+        verify(stepExecutionRepository).updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        );
         verify(workflowExecutionService).fail(workflowId);
     }
 
+    private void stubSuccessfulClaim(
+            PersistedStepExecution... candidates
+    ) {
+        when(stepExecutionRepository.claim(
+                any(UUID.class),
+                anyString(),
+                nullable(Instant.class),
+                any(Instant.class),
+                any(Instant.class)
+        )).thenAnswer(invocation -> {
+            UUID stepExecutionId = invocation.getArgument(0);
+            String workerId = invocation.getArgument(1);
+            Instant timeoutAt = invocation.getArgument(2);
+            Instant leaseExpiresAt = invocation.getArgument(3);
+
+            PersistedStepExecution persisted = null;
+
+            for (PersistedStepExecution candidate : candidates) {
+                if (candidate.stepExecution().getStepExecutionId()
+                        .equals(stepExecutionId)) {
+                    persisted = candidate;
+                    break;
+                }
+            }
+
+            if (persisted == null) {
+                throw new IllegalStateException(
+                        "Unexpected step claim: " + stepExecutionId
+                );
+            }
+
+            var step = persisted.stepExecution();
+            step.start(timeoutAt);
+            step.acquireLease(workerId, leaseExpiresAt);
+
+            return Optional.of(
+                    new PersistedStepExecution(
+                            step,
+                            persisted.version() + 1
+                    )
+            );
+        });
+    }
 
     private WorkflowDefinition definitionWithTwoSteps() {
         return new WorkflowDefinition(
@@ -745,7 +982,6 @@ class StepExecutionEngineTest {
     }
 
 
-
     private WorkflowExecution runningWorkflow() {
         WorkflowExecution workflow = WorkflowExecution.create(
                 "ORDER_PROCESSING",
@@ -755,4 +991,191 @@ class StepExecutionEngineTest {
         workflow.start();
         return workflow;
     }
+
+
+    @Test
+    void shouldCompleteStepUsingValidWorkerLease() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+        step.start(null);
+
+        String workerId = "worker-1";
+        long leaseVersion = 1L;
+
+        step.acquireLease(
+                workerId,
+                Instant.now().plusSeconds(60)
+        );
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 1);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 1)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(persistedStep));
+
+        when(stepExecutionRepository.updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        )).thenAnswer(invocation -> {
+            PersistedStepExecution persisted = invocation.getArgument(0);
+            return new PersistedStepExecution(
+                    persisted.stepExecution(),
+                    persisted.version() + 1
+            );
+        });
+
+        PersistedStepExecution result = engine.handleStepSuccess(
+                workflowId,
+                step.getStepExecutionId(),
+                Map.of("valid", true),
+                workerId,
+                leaseVersion
+        );
+
+        assertThat(result.stepExecution().getStatus())
+                .isEqualTo(StepExecutionStatus.COMPLETED);
+
+        verify(stepExecutionRepository).updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        );
+
+        verify(stepExecutionRepository, never())
+                .update(any(PersistedStepExecution.class));
+    }
+
+    @Test
+    void shouldRejectWorkerCompletionWhenLeaseHasExpired() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+        step.start(null);
+
+        String workerId = "worker-1";
+        long leaseVersion = 1L;
+
+        step.acquireLease(
+                workerId,
+                Instant.now().plusSeconds(60)
+        );
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 1);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 1)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(persistedStep));
+
+        when(stepExecutionRepository.updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        )).thenThrow(new OptimisticLockingFailureException(
+                "Worker lease has expired"
+        ));
+
+        assertThatThrownBy(() ->
+                engine.handleStepSuccess(
+                        workflowId,
+                        step.getStepExecutionId(),
+                        Map.of("valid", true),
+                        workerId,
+                        leaseVersion
+                )
+        ).isInstanceOf(OptimisticLockingFailureException.class);
+
+        verify(stepExecutionRepository).updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(leaseVersion),
+                any(Instant.class)
+        );
+
+        verify(workflowExecutionService, never()).complete(workflowId);
+    }
+
+    @Test
+    void shouldRejectFailureReportedWithStaleLeaseVersion() {
+        WorkflowExecution workflow = runningWorkflow();
+
+        StepExecution step = StepExecution.create(
+                workflowId,
+                "validate-order"
+        );
+        step.start(null);
+
+        String workerId = "worker-1";
+
+        // The step currently has lease version 1.
+        step.acquireLease(
+                workerId,
+                Instant.now().plusSeconds(60)
+        );
+
+        PersistedStepExecution persistedStep =
+                new PersistedStepExecution(step, 1);
+
+        when(workflowRepository.findById(workflowId))
+                .thenReturn(Optional.of(
+                        new PersistedWorkflowExecution(workflow, 1)
+                ));
+
+        when(stepExecutionRepository.findById(step.getStepExecutionId()))
+                .thenReturn(Optional.of(persistedStep));
+
+        when(definitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING",
+                1
+        )).thenReturn(Optional.of(definitionWithTwoSteps()));
+
+        when(stepExecutionRepository.updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(0L),
+                any(Instant.class)
+        )).thenThrow(new OptimisticLockingFailureException(
+                "Stale worker lease version"
+        ));
+
+        assertThatThrownBy(() ->
+                engine.handleStepFailure(
+                        workflowId,
+                        step.getStepExecutionId(),
+                        "Worker failed",
+                        workerId,
+                        0L
+                )
+        ).isInstanceOf(OptimisticLockingFailureException.class);
+
+        verify(stepExecutionRepository).updateWithLease(
+                eq(persistedStep),
+                eq(workerId),
+                eq(0L),
+                any(Instant.class)
+        );
+
+        verify(workflowExecutionService, never()).fail(workflowId);
+    }
+
 }
