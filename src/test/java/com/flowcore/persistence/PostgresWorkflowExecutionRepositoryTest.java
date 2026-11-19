@@ -15,6 +15,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.springframework.dao.OptimisticLockingFailureException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -128,6 +129,109 @@ class PostgresWorkflowExecutionRepositoryTest {
                 repository.findById(UUID.randomUUID());
 
         assertThat(result).isEmpty();
+    }
+
+    @Test
+    void shouldReturnOnlyRunningWorkflowExecutions() {
+
+        WorkflowExecution runningExecution1 = WorkflowExecution.create(
+                "ORDER_PROCESSING",
+                1,
+                Map.of("orderId", "order-101")
+        );
+
+        WorkflowExecution runningExecution2 = WorkflowExecution.create(
+                "ORDER_PROCESSING",
+                1,
+                Map.of("orderId", "order-102")
+        );
+
+        WorkflowExecution pendingExecution = WorkflowExecution.create(
+                "ORDER_PROCESSING",
+                1,
+                Map.of("orderId", "order-103")
+        );
+
+        repository.save(runningExecution1);
+        repository.save(runningExecution2);
+        repository.save(pendingExecution);
+
+        PersistedWorkflowExecution persisted1 = repository.findById(
+                runningExecution1.getWorkflowId()
+        ).orElseThrow();
+
+        PersistedWorkflowExecution persisted2 = repository.findById(
+                runningExecution2.getWorkflowId()
+        ).orElseThrow();
+
+        persisted1.workflowExecution().start();
+
+        repository.update(
+                persisted1.workflowExecution(),
+                persisted1.version()
+        );
+
+        persisted2.workflowExecution().start();
+
+        repository.update(
+                persisted2.workflowExecution(),
+                persisted2.version()
+        );
+
+        List<PersistedWorkflowExecution> runningWorkflows =
+                repository.findRunning(100);
+
+        assertThat(runningWorkflows)
+                .extracting(
+                        persisted ->
+                                persisted.workflowExecution().getWorkflowId()
+                )
+                .contains(
+                        runningExecution1.getWorkflowId(),
+                        runningExecution2.getWorkflowId()
+                )
+                .doesNotContain(
+                        pendingExecution.getWorkflowId()
+                );
+    }
+
+    @Test
+    void shouldRejectNonPositiveLimitWhenFindingRunningWorkflows() {
+
+        assertThatThrownBy(() -> repository.findRunning(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("limit must be positive");
+
+        assertThatThrownBy(() -> repository.findRunning(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("limit must be positive");
+    }
+
+    @Test
+    void shouldRespectLimitWhenFindingRunningWorkflows() {
+
+        for (int i = 0; i < 3; i++) {
+            WorkflowExecution execution = WorkflowExecution.create(
+                    "ORDER_PROCESSING",
+                    1,
+                    Map.of("orderId", "order-" + i)
+            );
+
+            PersistedWorkflowExecution persisted =
+                    repository.save(execution);
+
+            persisted.workflowExecution().start();
+
+            repository.update(
+                    persisted.workflowExecution(),
+                    persisted.version()
+            );
+        }
+
+        List<PersistedWorkflowExecution> result =
+                repository.findRunning(2);
+
+        assertThat(result).hasSize(2);
     }
 
 

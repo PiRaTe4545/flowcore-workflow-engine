@@ -21,3 +21,8 @@ management:
   endpoint:
     health:
       show-details: when_authorized
+
+flowcore:
+  worker:
+    polling-interval-ms: 1000
+    polling-batch-size: 50

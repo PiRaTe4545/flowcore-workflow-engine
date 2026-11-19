@@ -15,6 +15,7 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -69,6 +70,21 @@ public class PostgresWorkflowExecutionRepository
               AND version = ?
             """;
 
+    private static final String FIND_RUNNING_SQL = """
+        SELECT workflow_id,
+               workflow_type,
+               definition_version,
+               status,
+               input_payload,
+               created_at,
+               updated_at,
+               version
+        FROM workflow_executions
+        WHERE status = 'RUNNING'
+        ORDER BY created_at ASC
+        LIMIT ?
+        """;
+
     @Override
     public PersistedWorkflowExecution save(
             WorkflowExecution workflowExecution
@@ -119,6 +135,22 @@ public class PostgresWorkflowExecutionRepository
         return new PersistedWorkflowExecution(
                 workflowExecution,
                 expectedVersion + 1
+        );
+    }
+
+    @Override
+    public List<PersistedWorkflowExecution> findRunning(int limit) {
+
+        if (limit <= 0) {
+            throw new IllegalArgumentException(
+                    "limit must be positive"
+            );
+        }
+
+        return jdbcTemplate.query(
+                FIND_RUNNING_SQL,
+                workflowExecutionRowMapper(),
+                limit
         );
     }
 
@@ -197,4 +229,5 @@ public class PostgresWorkflowExecutionRepository
             );
         }
     }
+
 }
