@@ -838,4 +838,127 @@ class PostgresStepExecutionRepositoryTest {
                 .isEqualTo(taskTimeout);
         assertThat(persisted.version()).isEqualTo(1);
     }
+
+    @Test
+    void shouldRenewLeaseAndPreserveLeaseVersion() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant initialLeaseExpiry = now.plusSeconds(60);
+        Instant timeoutAt = now.plusSeconds(300);
+
+        PersistedStepExecution claimed = stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                timeoutAt,
+                initialLeaseExpiry,
+                now
+        ).orElseThrow();
+
+        Instant renewedExpiry = now.plusSeconds(120);
+
+        PersistedStepExecution renewed = stepRepository.renewLease(
+                step.getStepExecutionId(),
+                "worker-1",
+                1,
+                renewedExpiry,
+                now.plusSeconds(10)
+        );
+
+        assertThat(renewed.stepExecution().getLeaseOwner())
+                .isEqualTo("worker-1");
+        assertThat(renewed.stepExecution().getLeaseExpiresAt())
+                .isEqualTo(renewedExpiry);
+        assertThat(renewed.stepExecution().getLeaseVersion())
+                .isEqualTo(1);
+
+        assertThat(renewed.version())
+                .isEqualTo(claimed.version() + 1);
+    }
+
+    @Test
+    void shouldRejectLeaseRenewalFromDifferentWorker() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+
+        stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                null,
+                now.plusSeconds(60),
+                now
+        ).orElseThrow();
+
+        assertThatThrownBy(() -> stepRepository.renewLease(
+                step.getStepExecutionId(),
+                "worker-2",
+                1,
+                now.plusSeconds(120),
+                now.plusSeconds(10)
+        )).isInstanceOf(OptimisticLockingFailureException.class);
+    }
+
+    @Test
+    void shouldRejectLeaseRenewalAfterExpiration() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant leaseExpiry = now.plusSeconds(30);
+
+        stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                null,
+                leaseExpiry,
+                now
+        ).orElseThrow();
+
+        assertThatThrownBy(() -> stepRepository.renewLease(
+                step.getStepExecutionId(),
+                "worker-1",
+                1,
+                now.plusSeconds(120),
+                leaseExpiry.plusSeconds(1)
+        )).isInstanceOf(OptimisticLockingFailureException.class);
+    }
+
+    @Test
+    void shouldAllowLeaseRenewalBeyondTaskTimeout() {
+        StepExecution step = createStepExecution();
+        stepRepository.save(step);
+
+        Instant now = Instant.now();
+        Instant timeoutAt = now.plusSeconds(90);
+        Instant initialLeaseExpiry = now.plusSeconds(30);
+        Instant renewedLeaseExpiry = now.plusSeconds(120);
+
+        stepRepository.claim(
+                step.getStepExecutionId(),
+                "worker-1",
+                timeoutAt,
+                initialLeaseExpiry,
+                now
+        ).orElseThrow();
+
+        PersistedStepExecution renewed = stepRepository.renewLease(
+                step.getStepExecutionId(),
+                "worker-1",
+                1,
+                renewedLeaseExpiry,
+                now.plusSeconds(10)
+        );
+
+        assertThat(renewed.stepExecution().getLeaseExpiresAt())
+                .isEqualTo(renewedLeaseExpiry);
+
+        assertThat(renewed.stepExecution().getLeaseVersion())
+                .isEqualTo(1);
+
+        assertThat(renewed.version())
+                .isEqualTo(2);
+    }
 }

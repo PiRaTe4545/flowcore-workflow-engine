@@ -26,6 +26,9 @@ class WorkflowTaskExecutionServiceTest {
     private static final Duration LEASE_DURATION =
             Duration.ofMinutes(1);
 
+    private static final Duration LEASE_RENEWAL_INTERVAL =
+            Duration.ofSeconds(20);
+
     @Test
     void shouldReturnFalseWhenNoStepIsAvailable() {
         StepExecutionEngine stepExecutionEngine =
@@ -40,6 +43,8 @@ class WorkflowTaskExecutionServiceTest {
                 mock(WorkflowTaskContextBuilder.class);
         WorkflowTaskWorkerRegistry workerRegistry =
                 mock(WorkflowTaskWorkerRegistry.class);
+        StepExecutionLeaseRenewer leaseRenewer =
+                mock(StepExecutionLeaseRenewer.class);
 
         WorkflowTaskExecutionService service =
                 new WorkflowTaskExecutionService(
@@ -48,7 +53,8 @@ class WorkflowTaskExecutionServiceTest {
                         workflowDefinitionRepository,
                         stepExecutionRepository,
                         contextBuilder,
-                        workerRegistry
+                        workerRegistry,
+                        leaseRenewer
                 );
 
         UUID workflowId = UUID.randomUUID();
@@ -74,7 +80,8 @@ class WorkflowTaskExecutionServiceTest {
                 workflowDefinitionRepository,
                 stepExecutionRepository,
                 contextBuilder,
-                workerRegistry
+                workerRegistry,
+                leaseRenewer
         );
     }
 
@@ -92,6 +99,11 @@ class WorkflowTaskExecutionServiceTest {
                 mock(WorkflowTaskContextBuilder.class);
         WorkflowTaskWorkerRegistry workerRegistry =
                 mock(WorkflowTaskWorkerRegistry.class);
+        StepExecutionLeaseRenewer leaseRenewer =
+                mock(StepExecutionLeaseRenewer.class);
+
+        StepExecutionLeaseRenewer.LeaseRenewal leaseRenewal =
+                mock(StepExecutionLeaseRenewer.LeaseRenewal.class);
 
         WorkflowTaskExecutionService service =
                 new WorkflowTaskExecutionService(
@@ -100,7 +112,8 @@ class WorkflowTaskExecutionServiceTest {
                         workflowDefinitionRepository,
                         stepExecutionRepository,
                         contextBuilder,
-                        workerRegistry
+                        workerRegistry,
+                        leaseRenewer
                 );
 
         UUID workflowId = UUID.randomUUID();
@@ -156,6 +169,16 @@ class WorkflowTaskExecutionServiceTest {
                 eq(LEASE_DURATION)
         )).thenReturn(Optional.of(claimedStep));
 
+        when(leaseRenewer.start(
+                eq(stepExecutionId),
+                anyString(),
+                eq(1L),
+                eq(LEASE_DURATION),
+                eq(LEASE_RENEWAL_INTERVAL)
+        )).thenReturn(leaseRenewal);
+
+        when(leaseRenewal.isLeaseLost()).thenReturn(false);
+
         when(workflowExecutionService.getById(workflowId))
                 .thenReturn(persistedWorkflow);
 
@@ -184,13 +207,17 @@ class WorkflowTaskExecutionServiceTest {
 
         assertTrue(executed);
 
-        verify(stepExecutionEngine).claimNextServiceTask(
-                eq(workflowId),
+        verify(worker).execute(context);
+
+        verify(leaseRenewer).start(
+                eq(stepExecutionId),
                 anyString(),
-                eq(LEASE_DURATION)
+                eq(1L),
+                eq(LEASE_DURATION),
+                eq(LEASE_RENEWAL_INTERVAL)
         );
 
-        verify(worker).execute(context);
+        verify(leaseRenewal).stop();
 
         verify(stepExecutionEngine).handleStepSuccess(
                 eq(workflowId),
@@ -223,6 +250,11 @@ class WorkflowTaskExecutionServiceTest {
                 mock(WorkflowTaskContextBuilder.class);
         WorkflowTaskWorkerRegistry workerRegistry =
                 mock(WorkflowTaskWorkerRegistry.class);
+        StepExecutionLeaseRenewer leaseRenewer =
+                mock(StepExecutionLeaseRenewer.class);
+
+        StepExecutionLeaseRenewer.LeaseRenewal leaseRenewal =
+                mock(StepExecutionLeaseRenewer.LeaseRenewal.class);
 
         WorkflowTaskExecutionService service =
                 new WorkflowTaskExecutionService(
@@ -231,7 +263,8 @@ class WorkflowTaskExecutionServiceTest {
                         workflowDefinitionRepository,
                         stepExecutionRepository,
                         contextBuilder,
-                        workerRegistry
+                        workerRegistry,
+                        leaseRenewer
                 );
 
         UUID workflowId = UUID.randomUUID();
@@ -284,6 +317,16 @@ class WorkflowTaskExecutionServiceTest {
                 eq(LEASE_DURATION)
         )).thenReturn(Optional.of(claimedStep));
 
+        when(leaseRenewer.start(
+                eq(stepExecutionId),
+                anyString(),
+                eq(1L),
+                eq(LEASE_DURATION),
+                eq(LEASE_RENEWAL_INTERVAL)
+        )).thenReturn(leaseRenewal);
+
+        when(leaseRenewal.isLeaseLost()).thenReturn(false);
+
         when(workflowExecutionService.getById(workflowId))
                 .thenReturn(persistedWorkflow);
 
@@ -314,6 +357,10 @@ class WorkflowTaskExecutionServiceTest {
 
         assertTrue(executed);
 
+        verify(worker).execute(context);
+
+        verify(leaseRenewal).stop();
+
         verify(stepExecutionEngine).handleStepFailure(
                 eq(workflowId),
                 eq(stepExecutionId),
@@ -330,4 +377,150 @@ class WorkflowTaskExecutionServiceTest {
                 anyLong()
         );
     }
+
+
+    @Test
+    void shouldDiscardWorkerResultWhenLeaseIsLost() {
+        StepExecutionEngine stepExecutionEngine =
+                mock(StepExecutionEngine.class);
+        WorkflowExecutionService workflowExecutionService =
+                mock(WorkflowExecutionService.class);
+        WorkflowDefinitionRepository workflowDefinitionRepository =
+                mock(WorkflowDefinitionRepository.class);
+        StepExecutionRepository stepExecutionRepository =
+                mock(StepExecutionRepository.class);
+        WorkflowTaskContextBuilder contextBuilder =
+                mock(WorkflowTaskContextBuilder.class);
+        WorkflowTaskWorkerRegistry workerRegistry =
+                mock(WorkflowTaskWorkerRegistry.class);
+        StepExecutionLeaseRenewer leaseRenewer =
+                mock(StepExecutionLeaseRenewer.class);
+
+        StepExecutionLeaseRenewer.LeaseRenewal leaseRenewal =
+                mock(StepExecutionLeaseRenewer.LeaseRenewal.class);
+
+        WorkflowTaskExecutionService service =
+                new WorkflowTaskExecutionService(
+                        stepExecutionEngine,
+                        workflowExecutionService,
+                        workflowDefinitionRepository,
+                        stepExecutionRepository,
+                        contextBuilder,
+                        workerRegistry,
+                        leaseRenewer
+                );
+
+        UUID workflowId = UUID.randomUUID();
+        UUID stepExecutionId = UUID.randomUUID();
+
+        StepExecution stepExecution = mock(StepExecution.class);
+
+        when(stepExecution.getStepExecutionId()).thenReturn(stepExecutionId);
+        when(stepExecution.getStepName()).thenReturn("validate-order");
+        when(stepExecution.getLeaseVersion()).thenReturn(1L);
+
+        PersistedStepExecution claimedStep =
+                new PersistedStepExecution(stepExecution, 1L);
+
+        WorkflowExecution workflow = mock(WorkflowExecution.class);
+
+        when(workflow.getWorkflowType()).thenReturn("ORDER_PROCESSING");
+        when(workflow.getDefinitionVersion()).thenReturn(1);
+
+        PersistedWorkflowExecution persistedWorkflow =
+                new PersistedWorkflowExecution(workflow, 1L);
+
+        WorkflowStepDefinition stepDefinition =
+                new WorkflowStepDefinition(
+                        "validate-order",
+                        StepType.SERVICE_TASK,
+                        "ORDER_VALIDATION",
+                        null,
+                        null
+                );
+
+        WorkflowDefinition definition = new WorkflowDefinition(
+                "ORDER_PROCESSING",
+                1,
+                List.of(stepDefinition)
+        );
+
+        WorkflowTaskContext context = new WorkflowTaskContext(
+                workflowId,
+                stepExecutionId,
+                "ORDER_VALIDATION",
+                Map.of("workflow", Map.of("orderId", "ORD-123"))
+        );
+
+        WorkflowTaskWorker worker = mock(WorkflowTaskWorker.class);
+
+        when(stepExecutionEngine.claimNextServiceTask(
+                eq(workflowId),
+                anyString(),
+                eq(LEASE_DURATION)
+        )).thenReturn(Optional.of(claimedStep));
+
+        when(leaseRenewer.start(
+                eq(stepExecutionId),
+                anyString(),
+                eq(1L),
+                eq(LEASE_DURATION),
+                eq(LEASE_RENEWAL_INTERVAL)
+        )).thenReturn(leaseRenewal);
+
+        when(leaseRenewal.isLeaseLost()).thenReturn(true);
+
+        when(leaseRenewal.getRenewalFailure())
+                .thenReturn(new IllegalStateException("Lease renewal failed"));
+
+        when(workflowExecutionService.getById(workflowId))
+                .thenReturn(persistedWorkflow);
+
+        when(workflowDefinitionRepository.findByTypeAndVersion(
+                "ORDER_PROCESSING", 1))
+                .thenReturn(Optional.of(definition));
+
+        when(stepExecutionRepository.findByWorkflowId(workflowId))
+                .thenReturn(List.of(claimedStep));
+
+        when(contextBuilder.build(
+                workflow,
+                stepDefinition,
+                definition.steps(),
+                List.of(claimedStep),
+                stepExecutionId
+        )).thenReturn(context);
+
+        when(workerRegistry.getWorker("ORDER_VALIDATION"))
+                .thenReturn(worker);
+
+        when(worker.execute(context))
+                .thenReturn(WorkflowTaskResult.success(
+                        Map.of("valid", true)
+                ));
+
+        boolean executed = service.executeNextTask(workflowId);
+
+        assertTrue(executed);
+
+        verify(worker).execute(context);
+        verify(leaseRenewal).stop();
+
+        verify(stepExecutionEngine, never()).handleStepSuccess(
+                any(),
+                any(),
+                anyMap(),
+                anyString(),
+                anyLong()
+        );
+
+        verify(stepExecutionEngine, never()).handleStepFailure(
+                any(),
+                any(),
+                anyString(),
+                anyString(),
+                anyLong()
+        );
+    }
+
 }

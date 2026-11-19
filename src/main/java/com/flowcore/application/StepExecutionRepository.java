@@ -34,4 +34,12 @@ public interface StepExecutionRepository {
             long expectedLeaseVersion,
             Instant now
     );
+
+    PersistedStepExecution renewLease(
+            UUID stepExecutionId,
+            String workerId,
+            long expectedLeaseVersion,
+            Instant newLeaseExpiresAt,
+            Instant now
+    );
 }

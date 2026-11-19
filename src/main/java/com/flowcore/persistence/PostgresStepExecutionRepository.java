@@ -201,29 +201,29 @@ public class PostgresStepExecutionRepository
         StepExecution step = persisted.stepExecution();
 
         String sql = """
-            UPDATE workflow_step_executions
-            SET status = ?,
-                attempt_count = ?,
-                next_retry_at = ?,
-                timeout_at = ?,
-                last_error = ?,
-                output_payload = ?::jsonb,
-                lease_owner = ?,
-                lease_expires_at = ?,
-                lease_version = ?,
-                updated_at = ?,
-                version = version + 1
-            WHERE step_execution_id = ?
-              AND version = ?
-              AND status = 'RUNNING'
-              AND lease_owner = ?
-              AND lease_version = ?
-              AND lease_expires_at > ?
-              AND (
-                    timeout_at IS NULL
-                    OR timeout_at > ?
-              )
-            """;
+                UPDATE workflow_step_executions
+                SET status = ?,
+                    attempt_count = ?,
+                    next_retry_at = ?,
+                    timeout_at = ?,
+                    last_error = ?,
+                    output_payload = ?::jsonb,
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    lease_version = ?,
+                    updated_at = ?,
+                    version = version + 1
+                WHERE step_execution_id = ?
+                  AND version = ?
+                  AND status = 'RUNNING'
+                  AND lease_owner = ?
+                  AND lease_version = ?
+                  AND lease_expires_at > ?
+                  AND (
+                        timeout_at IS NULL
+                        OR timeout_at > ?
+                  )
+                """;
 
         int updatedRows = jdbcTemplate.update(
                 sql,
@@ -260,7 +260,6 @@ public class PostgresStepExecutionRepository
     }
 
 
-
     @Override
     public Optional<PersistedStepExecution> claim(
             UUID stepExecutionId,
@@ -289,37 +288,37 @@ public class PostgresStepExecutionRepository
         }
 
         String sql = """
-            UPDATE workflow_step_executions
-            SET status = 'RUNNING',
-                attempt_count = attempt_count + 1,
-                next_retry_at = NULL,
-                timeout_at = COALESCE(timeout_at, ?),
-                lease_owner = ?,
-                lease_expires_at = ?,
-                lease_version = lease_version + 1,
-                updated_at = ?,
-                version = version + 1
-            WHERE step_execution_id = ?
-              AND (
-                    timeout_at IS NULL
-                    OR timeout_at > ?
-              )
-              AND (
-                    (
-                        status = 'PENDING'
-                        AND (
-                            next_retry_at IS NULL
-                            OR next_retry_at <= ?
+                UPDATE workflow_step_executions
+                SET status = 'RUNNING',
+                    attempt_count = attempt_count + 1,
+                    next_retry_at = NULL,
+                    timeout_at = COALESCE(timeout_at, ?),
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    lease_version = lease_version + 1,
+                    updated_at = ?,
+                    version = version + 1
+                WHERE step_execution_id = ?
+                  AND (
+                        timeout_at IS NULL
+                        OR timeout_at > ?
+                  )
+                  AND (
+                        (
+                            status = 'PENDING'
+                            AND (
+                                next_retry_at IS NULL
+                                OR next_retry_at <= ?
+                            )
                         )
-                    )
-                    OR
-                    (
-                        status = 'RUNNING'
-                        AND lease_expires_at <= ?
-                    )
-              )
-            RETURNING *
-            """;
+                        OR
+                        (
+                            status = 'RUNNING'
+                            AND lease_expires_at <= ?
+                        )
+                  )
+                RETURNING *
+                """;
 
         List<PersistedStepExecution> claimed = jdbcTemplate.query(
                 sql,
@@ -379,7 +378,8 @@ public class PostgresStepExecutionRepository
         try {
             return objectMapper.readValue(
                     payload,
-                    new TypeReference<Map<String, Object>>() {}
+                    new TypeReference<Map<String, Object>>() {
+                    }
             );
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException(
@@ -421,4 +421,78 @@ public class PostgresStepExecutionRepository
                         rs.getLong("version")
                 );
             };
+
+    @Override
+    public PersistedStepExecution renewLease(
+            UUID stepExecutionId,
+            String workerId,
+            long expectedLeaseVersion,
+            Instant newLeaseExpiresAt,
+            Instant now
+    ) {
+        if (stepExecutionId == null) {
+            throw new IllegalArgumentException(
+                    "stepExecutionId cannot be null"
+            );
+        }
+
+        if (workerId == null || workerId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "workerId cannot be blank"
+            );
+        }
+
+        if (expectedLeaseVersion < 0) {
+            throw new IllegalArgumentException(
+                    "expectedLeaseVersion cannot be negative"
+            );
+        }
+
+        if (newLeaseExpiresAt == null || now == null
+                || !newLeaseExpiresAt.isAfter(now)) {
+            throw new IllegalArgumentException(
+                    "New lease expiry must be in the future"
+            );
+        }
+
+        String sql = """
+                UPDATE workflow_step_executions
+                SET lease_expires_at = ?,
+                    updated_at = ?,
+                    version = version + 1
+                WHERE step_execution_id = ?
+                  AND status = 'RUNNING'
+                  AND lease_owner = ?
+                  AND lease_version = ?
+                  AND lease_expires_at > ?
+                  AND lease_expires_at < ?
+                  AND (
+                        timeout_at IS NULL
+                        OR timeout_at > ?
+                    )
+                RETURNING *
+                """;
+
+        List<PersistedStepExecution> renewed = jdbcTemplate.query(
+                sql,
+                stepExecutionRowMapper,
+                toTimestamp(newLeaseExpiresAt),
+                toTimestamp(now),
+                stepExecutionId,
+                workerId,
+                expectedLeaseVersion,
+                toTimestamp(now),
+                toTimestamp(newLeaseExpiresAt),
+                toTimestamp(now)
+        );
+
+        if (renewed.isEmpty()) {
+            throw new OptimisticLockingFailureException(
+                    "Step execution lease cannot be renewed: "
+                            + stepExecutionId
+            );
+        }
+
+        return renewed.get(0);
+    }
 }
